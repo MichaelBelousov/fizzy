@@ -454,11 +454,6 @@ pub fn documentHasRecognizedSaveExtension(self: Plugin, doc: DocHandle) bool {
     return if (self.vtable.documentHasRecognizedSaveExtension) |f| f(self.state, doc) else false;
 }
 
-
-
-
-
-
 // ---- document lifecycle wrappers (operate on a DocHandle this plugin owns) ----
 
 /// Load `path` into fizzy-owned buffer at `out_doc`. Returns whether the plugin
@@ -679,9 +674,6 @@ pub fn documentDefaultSaveAsFilename(self: Plugin, doc: DocHandle, allocator: st
     defer prof.end();
     return if (self.vtable.documentDefaultSaveAsFilename) |f| (f(self.state, doc, allocator) catch |err| return self.failed("documentDefaultSaveAsFilename", err)) else error.Unsupported;
 }
-
-
-
 
 pub fn saveQuestion(self: Plugin, doc: DocHandle, path: []const u8, allocator: std.mem.Allocator) ?SaveQuestion {
     const prof = core.profile.begin(self.id, "saveQuestion");
