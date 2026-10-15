@@ -5205,7 +5205,7 @@ pub fn openFile(editor: *Editor, opts: sdk.EditorAPI.OpenOptions) !bool {
     else
         null;
 
-    const started = try editor.openPath(opts.path, opts.grouping, .{ .preview = preview, .take_slot_of = slot });
+    const started = try editor.openPath(opts.path, opts.grouping, .{ .preview = preview, .take_slot_of = slot, .beside = opts.beside });
     if (preview) {
         if (editor.docFromPath(opts.path)) |doc| editor.setDocumentPreview(doc.id, true);
     }
@@ -5265,9 +5265,11 @@ pub fn openFilePath(editor: *Editor, path_in: []const u8, grouping: u64) !bool {
 }
 
 /// Where an open's placeholder tab goes (see `Openings.begin`).
-const Placement = struct {
+pub const Placement = struct {
     preview: bool = false,
     take_slot_of: ?[]const u8 = null,
+    /// `OpenOptions.beside`.
+    beside: bool = false,
 };
 
 /// Watch this executable while `restart_on_rebuild` is on, and stop when it goes off. Once a frame;
@@ -5368,7 +5370,9 @@ fn keepSessionForRestart(editor: *Editor) bool {
     return true;
 }
 
-fn openPath(editor: *Editor, path_in: []const u8, grouping: u64, placement: Placement) !bool {
+fn openPath(editor: *Editor, path_in: []const u8, grouping: u64, placement_in: Placement) !bool {
+    var placement = placement_in;
+    placement.beside = placement.beside or editor.app.host.open_beside > 0;
     // Last session's document, as a restart kept it: from its state, not the disk.
     if (comptime restart.supported) if (editor.session) |*kept| if (kept.openKept(editor, path_in, grouping) != null) return true;
 
@@ -5378,7 +5382,9 @@ fn openPath(editor: *Editor, path_in: []const u8, grouping: u64, placement: Plac
     // Already open? Just focus it. (`docFromPath` also collapses lexical variants, so a doc
     // opened under a pre-normalization spelling is still found.)
     if (editor.docFromPath(path)) |doc| {
-        if (editor.app.open_files.getIndex(doc.id)) |i| {
+        if (placement.beside) {
+            editor.workbench.showBeside(doc);
+        } else if (editor.app.open_files.getIndex(doc.id)) |i| {
             editor.workbench.setActiveDocIndex(i);
         }
         return false;
@@ -5398,7 +5404,7 @@ fn openPath(editor: *Editor, path_in: []const u8, grouping: u64, placement: Plac
         const started = try editor.doc_io.open(path, grouping);
         if (started) {
             if (editor.app.host.pluginForExtension(std.fs.path.extension(path))) |owner| {
-                editor.openings.begin(editor, path, grouping, placement.preview, owner, placement.take_slot_of);
+                editor.openings.begin(editor, path, grouping, placement, owner);
             }
         }
         return started;
@@ -5439,7 +5445,7 @@ fn openPath(editor: *Editor, path_in: []const u8, grouping: u64, placement: Plac
         job.destroy(io);
         return err;
     };
-    editor.openings.begin(editor, path, grouping, placement.preview, owner, placement.take_slot_of);
+    editor.openings.begin(editor, path, grouping, placement, owner);
 
     return true;
 }
@@ -5680,10 +5686,17 @@ pub fn newFile(editor: *Editor, path: []const u8, grid: sdk.EditorAPI.NewDocGrid
     const id = owner.documentIdFromBuffer(staging.buf.ptr);
     try editor.insertOpenDoc(staging.buf.ptr, owner, id);
     editor.documentOpened(id);
-    editor.workbench.setActiveDocIndex(editor.app.open_files.count() - 1);
+    const doc = editor.app.docById(id) orelse return error.FailedToCreateFile;
+    // Created beside the person (`Host.open_beside`), it lands there at once: never first over
+    // the document they are in, fitted to that pane, and then moved.
+    if (editor.app.host.open_beside > 0) {
+        editor.workbench.showBeside(doc);
+    } else {
+        editor.workbench.setActiveDocIndex(editor.app.open_files.count() - 1);
+    }
     editor.pending_composite_warmup = true;
 
-    return editor.app.docById(id) orelse return error.FailedToCreateFile;
+    return doc;
 }
 
 /// Dispatch a generic fizzy action to the active document owner's command (`<owner_id>.<action>`).
