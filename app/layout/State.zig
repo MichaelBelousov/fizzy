@@ -37,6 +37,19 @@ pub const StoreOffer = struct {
     title: []const u8,
 };
 
+/// How an application gives a document a home outside the slots its plugins made: a view of its
+/// own that holds documents (fizzy's workspaces). With one, a document carried in the view drag
+/// lands in any place as a view would, inside a new such view (`ViewDrag.place`).
+pub const Documents = struct {
+    ctx: *anyopaque,
+    /// A new view holding the documents `ids`, the first shown — a document not open yet opened
+    /// in it — for the layout to place like any view it lands. Its id, or null when none went in.
+    house: *const fn (ctx: *anyopaque, ids: []const []const u8) ?[]const u8,
+    /// The view holding document `id` and nothing else, if one does: carried alone, the
+    /// document carries that view, which lands as itself rather than inside a new one.
+    alone: *const fn (ctx: *anyopaque, id: []const u8) ?[]const u8,
+};
+
 pub const StoreCatalog = struct {
     uninstalled: *const fn (arena: std.mem.Allocator) []const StoreOffer,
     install: *const fn (id: []const u8) void,
@@ -83,6 +96,9 @@ picker: Picker = .{},
 /// Filled in by the application when it has a plugin store. Null means the picker only lists
 /// loaded surfaces — tests, and an app that never switched the store on.
 store_catalog: ?StoreCatalog = null,
+/// Filled in by the application when documents can have homes outside their slots. Null means a
+/// document goes only into a slot made for it.
+documents: ?Documents = null,
 /// Region waiting for a store install to finish so its new surfaces can be assigned. Empty
 /// while nothing is pending. gpa-owned.
 pending_store_region: []const u8 = "",

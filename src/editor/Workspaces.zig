@@ -43,7 +43,9 @@ pub fn wanted(gpa: std.mem.Allocator) bool {
 /// Hand the workbench the app's places to arrange its panes in. Before the workbench registers,
 /// so it knows not to offer its one surface of every pane, and with `self` at its final address.
 pub fn install(self: *Workspaces, wb: *Workbench) void {
-    wb.places = .{ .ctx = self, .beside = beside, .placed = placed, .close = close };
+    wb.places = .{ .ctx = self, .beside = beside, .placed = placed, .close = close, .open = open };
+    // A document carried beside a view, rather than into a pane, opens a workspace there.
+    self.editorOf().app.layout.documents = .{ .ctx = self, .house = house, .alone = alone };
 }
 
 pub fn deinit(self: *Workspaces, gpa: std.mem.Allocator) void {
@@ -73,6 +75,8 @@ pub fn sync(self: *Workspaces) void {
     if (wb.places == null) return;
     const gpa = editor.app.gpa;
     const host = &editor.app.host;
+
+    self.seat();
 
     var i: usize = 0;
     while (i < self.views.count()) {
@@ -115,6 +119,35 @@ pub fn sync(self: *Workspaces) void {
             continue;
         }
         _ = beside(self, g, first.?, .right);
+    }
+}
+
+/// Every open document in a workspace: one that no pane holds — its load has just landed, or
+/// its plugin came back with it — goes into the workspace it was opened toward, the grouping the
+/// app stamped on it ("Open to the Side"'s, or the active workspace's). A tab under another
+/// owner's id for the same file (a plugin installed since last session) is replaced where it was.
+fn seat(self: *Workspaces) void {
+    const editor = self.editorOf();
+    const wb = &editor.workbench;
+    const host = &editor.app.host;
+    var i: usize = 0;
+    while (i < host.openDocCount()) : (i += 1) {
+        const doc = host.docByIndex(i) orelse continue;
+        const path = doc.owner.documentPath(doc);
+        const id = sdk.document.surfaceId(host.arena(), doc.owner.id, path) catch continue;
+        const held = for (wb.workspaces.values()) |*ws| {
+            if (ws.hasTab(id)) break true;
+        } else false;
+        if (held) continue;
+        var stale_in: ?u64 = null;
+        for (wb.workspaces.values()) |*ws| {
+            if (ws.removeTabsForPath(path)) stale_in = ws.grouping;
+        }
+        // Grouping 0 is the one the person is in, once the first workspace has gone.
+        const want = doc.owner.documentGrouping(doc);
+        const toward = if (want == 0 and !wb.workspaces.contains(0)) wb.open_workspace_grouping else want;
+        const ws = wb.pane(stale_in orelse toward) catch continue;
+        ws.addTab(id, false);
     }
 }
 
@@ -174,6 +207,70 @@ fn beside(ctx: *anyopaque, grouping: u64, anchor: u64, side: Workbench.Panes.Sid
     l.state.assign(l.gpa, new, &.{id}) catch return false;
     l.state.markDirty();
     return true;
+}
+
+/// A new workspace holding the documents `ids` (`Layout.State.documents`), for the layout to
+/// place as it lands any view: each moved out of the pane it was in, or opened in it when it is
+/// not open yet, the first shown. Its view is registered at once, so the place it lands in can
+/// select it this frame. Null, and no workspace, when none went in.
+fn house(ctx: *anyopaque, ids: []const []const u8) ?[]const u8 {
+    const self: *Workspaces = @ptrCast(@alignCast(ctx));
+    const editor = self.editorOf();
+    const wb = &editor.workbench;
+    const host = &editor.app.host;
+    const g = wb.newGroupingID();
+    const gop = wb.workspaces.getOrPut(wb.allocator, g) catch return null;
+    if (!gop.found_existing) gop.value_ptr.* = Editor.Workspace.init(g);
+    // Empty until a load lands, not emptied: the rebuild keeps it.
+    gop.value_ptr.expecting = true;
+
+    var landed = false;
+    // The first last, so it is the one shown: a document shows as it goes in.
+    var i = ids.len;
+    while (i > 0) {
+        i -= 1;
+        const id = ids[i];
+        if (host.surfaceById(id) == null) {
+            const path = sdk.document.pathOfSurfaceId(id) orelse continue;
+            landed = (host.openFile(.{ .path = path, .grouping = g }) catch false) or landed;
+            continue;
+        }
+        for (wb.workspaces.values()) |*ws| if (ws.grouping != g) ws.removeTab(id);
+        const ws = wb.workspaces.getPtr(g) orelse return null;
+        ws.addTab(id, true);
+        landed = true;
+    }
+    if (!landed) {
+        if (wb.workspaces.getPtr(g)) |ws| ws.deinit();
+        _ = wb.workspaces.orderedRemove(g);
+        return null;
+    }
+    self.register(g) catch return null;
+    return self.views.get(g).?.id;
+}
+
+fn open(ctx: *anyopaque, grouping: u64, side: Workbench.Panes.Side) bool {
+    const self: *Workspaces = @ptrCast(@alignCast(ctx));
+    var l = layoutOf(self.editorOf());
+    var buf: [64]u8 = undefined;
+    const place = Layout.ViewDrag.holderOf(&l, viewId(&buf, grouping)) orelse return false;
+    return Layout.splitOn(&l, place, switch (side) {
+        .left => .left,
+        .right => .right,
+        .top => .top,
+        .bottom => .bottom,
+    }) != null;
+}
+
+/// The view of the workspace whose only tab is document `id`, if one is.
+fn alone(ctx: *anyopaque, id: []const u8) ?[]const u8 {
+    const self: *Workspaces = @ptrCast(@alignCast(ctx));
+    for (self.editorOf().workbench.workspaces.values()) |*ws| {
+        if (ws.tabCount() != 1 or !ws.hasTab(id)) continue;
+        const v = self.views.get(ws.grouping) orelse return null;
+        return v.id;
+    }
+    return null;
 }
 
 fn placed(ctx: *anyopaque, grouping: u64) bool {

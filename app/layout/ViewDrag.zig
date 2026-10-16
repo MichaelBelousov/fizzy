@@ -848,8 +848,9 @@ fn mapTargets(l: *Layout, d: *ViewDrag) void {
     // takes any view — so none shows its zones.
     if (std.mem.eql(u8, d.moved_id, held_id)) return;
     const surface_kw = draggedKeywords(l);
-    // A tab's content goes to a slot made for it, never a plain place (`Layout.slotted`).
-    const slotted = slottedId(l, d.moved_id);
+    // A tab's content goes to a slot made for it, never into a plain place (`Layout.slotted`) —
+    // only beside one, where the application gives it a home (`State.documents`).
+    const slotted = slottedId(l, d.moved_id) and l.state.documents == null;
     // Last frame's registry: complete, where this frame's is still being
     // filled in around the click that started the drag.
     const places = if (l.state.regions.items.len > 0)
@@ -2242,10 +2243,16 @@ fn dropOnPluginChooser(l: *Layout, source: []const u8, dest: []const u8, mouse: 
 /// that went in.
 pub fn insertInto(l: *Layout, source: []const u8, dest: []const u8, at: Insert) void {
     const moved = ownId(l.arena, movedFrom(l, source) orelse return) orelse return;
-    if (l.host.surfaceById(moved) == null) return;
     const r = regionNamed(l.state, dest) orelse return;
     if (!accepts(r.*, keywordsOf(l, moved))) return;
-    if (!r.kind_slot and slottedId(l, moved)) return;
+    // A document — open, or a file out of the tree — along a plain place's chooser goes in there
+    // inside a new view holding it (`house`).
+    if (!r.kind_slot and slottedId(l, moved)) {
+        if (l.state.documents == null) return;
+        const view = houseView(l, moved) orelse return;
+        return insertView(l, dest, view, at);
+    }
+    if (l.host.surfaceById(moved) == null) return;
     const assigned = l.state.assignment(dest);
     const held = holding(l, dest);
     const along = containsId(held, moved);
@@ -2275,6 +2282,22 @@ pub fn insertInto(l: *Layout, source: []const u8, dest: []const u8, at: Insert) 
         takeOut(l, source, moved, null);
         shutIfEmptied(l, source);
     }
+    l.state.markDirty();
+    dvui.refresh(null, @src(), null);
+}
+
+/// Put `view`, new and in no place yet, into `dest`'s list at `at`, and show it there.
+fn insertView(l: *Layout, dest: []const u8, view: []const u8, at: Insert) void {
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
+    list.appendSlice(l.arena, holding(l, dest)) catch return;
+    const index = switch (at) {
+        .before => |id| indexOfId(list.items, id) orelse list.items.len,
+        .after => |id| if (indexOfId(list.items, id)) |i| i + 1 else list.items.len,
+        .end => list.items.len,
+    };
+    list.insert(l.arena, index, view) catch return;
+    l.state.assign(l.gpa, dest, list.items) catch return;
+    selectNamed(l, dest, view);
     l.state.markDirty();
     dvui.refresh(null, @src(), null);
 }
@@ -2329,7 +2352,7 @@ pub fn place(l: *Layout, source: []const u8, dest: []const u8, kind: Drop.Kind) 
     if (!has_surface and !unopened(l, moved)) return;
     if (regionNamed(l.state, dest)) |r| {
         if (!accepts(r.*, keywordsOf(l, moved))) return;
-        if (!r.kind_slot and slottedId(l, moved)) return;
+        if (!r.kind_slot and slottedId(l, moved)) return house(l, dest, plan, moved);
         // A plugin's region is asked first: it makes its own places, so a split of it is
         // something only it can do (`RegionSpec.on_drop`).
         if (r.on_drop) |on_drop| {
@@ -2374,6 +2397,79 @@ pub fn place(l: *Layout, source: []const u8, dest: []const u8, kind: Drop.Kind) 
     shutIfEmptied(l, source);
     l.state.markDirty();
     dvui.refresh(null, @src(), null);
+}
+
+/// A document carried onto a plain place, which only a slot made for it takes: it lands there
+/// inside a new view of the application's that holds it, and what was carried with it
+/// (`State.documents`), as a view carried there would land — an edge splits the place and the
+/// new half holds it; the middle adds it to a place of tabs, and takes a place of one, the view
+/// it replaces let go where its keywords show it (a document's slot is no place to send it back
+/// to). Where the document came from is the slot's plugin's to tidy: its tab moves, as a drop
+/// into another slot moves it.
+fn house(l: *Layout, dest: []const u8, plan: Drop.Plan, moved: []const u8) void {
+    if (carriedView(l, moved)) |carried| return landView(l, carried.from, dest, plan, carried.view);
+    const place_name = switch (plan) {
+        .split => |sp| Region.splitOn(l, dest, sp.mint) orelse return,
+        .swap, .join => dest,
+        .remove, .float => return,
+    };
+    const view = houseView(l, moved) orelse {
+        if (plan == .split) closeMinted(l, place_name);
+        return;
+    };
+    const many = if (regionNamed(l.state, place_name)) |r| l.state.showsOf(place_name, r.shows) == .many else false;
+    const list = if (many and plan != .split) idsWith(l.arena, holding(l, place_name), view) else l.arena.dupe([]const u8, &.{view}) catch return;
+    l.state.assign(l.gpa, place_name, list) catch return;
+    selectNamed(l, place_name, view);
+    l.state.markDirty();
+    dvui.refresh(null, @src(), null);
+}
+
+/// The view a document carried alone carries with it (`State.Documents.alone`), and the place it
+/// is in: the only tab of its workspace takes the workspace along, so the drop moves that, as
+/// a drag of the workspace itself would, rather than making a new one round the document and
+/// leaving the old to close — a round trip that drew the document anew twice, and blinked.
+fn carriedView(l: *Layout, moved: []const u8) ?struct { view: []const u8, from: []const u8 } {
+    const docs = l.state.documents orelse return null;
+    if (l.state.view_drag.with_n > 1) return null;
+    const view = ownId(l.arena, docs.alone(docs.ctx, moved) orelse return null) orelse return null;
+    const from = ownId(l.arena, holderOf(l, view) orelse return null) orelse return null;
+    return .{ .view = view, .from = from };
+}
+
+/// Land view `view`, shown in place `from`, on `dest` as `plan` says — what `place` does with a
+/// view carried out of its place, for one a document carried along (`carriedView`).
+fn landView(l: *Layout, from: []const u8, dest: []const u8, plan: Drop.Plan, view: []const u8) void {
+    switch (plan) {
+        .split => |sp| {
+            const new = Region.splitOn(l, dest, sp.mint) orelse return;
+            l.state.assign(l.gpa, new, &.{view}) catch {};
+            selectNamed(l, new, view);
+            takeOut(l, from, view, null);
+        },
+        .swap, .join => if (std.mem.eql(u8, from, dest))
+            return
+        else if (joins(l, from, dest))
+            join(l, from, dest, view)
+        else
+            swap(l, from, dest, view),
+        .remove, .float => return,
+    }
+    shutIfEmptied(l, from);
+    l.state.markDirty();
+    dvui.refresh(null, @src(), null);
+}
+
+/// The application's new view holding `moved` and what was carried with it (`State.documents`).
+fn houseView(l: *Layout, moved: []const u8) ?[]const u8 {
+    const docs = l.state.documents orelse return null;
+    var ids: std.ArrayListUnmanaged([]const u8) = .empty;
+    ids.append(l.arena, moved) catch return null;
+    const d = &l.state.view_drag;
+    if (d.active() and d.with_n > 1) for (d.with[1..d.with_n]) |it| {
+        if (it.id.len > 0 and slottedId(l, it.id)) ids.append(l.arena, ownId(l.arena, it.id) orelse continue) catch break;
+    };
+    return ownId(l.arena, docs.house(docs.ctx, ids.items) orelse return null);
 }
 
 /// Whether the view carried out of `source` floats when it is dropped on the middle of `source`
@@ -2680,7 +2776,8 @@ fn join(l: *Layout, source: []const u8, dest: []const u8, moved: []const u8) voi
         }
     }
     if (!containsId(ids.items, moved)) ids.append(l.arena, moved) catch {};
-    l.state.setShows(l.gpa, pair.keep, .many);
+    // As tabs only for more than one: a view joined with an empty half is the one view.
+    if (ids.items.len > 1) l.state.setShows(l.gpa, pair.keep, .many);
     l.state.assign(l.gpa, pair.keep, ids.items) catch {};
     l.state.assign(l.gpa, pair.drop, &.{}) catch {};
     selectNamed(l, pair.keep, moved);
@@ -2862,13 +2959,13 @@ fn closeMinted(l: *Layout, name: []const u8) void {
             return;
         }
     }
-    const r = regionNamed(l.state, name) orelse return;
-    if (r.id != .zero and Split.sizeOf(r.id) > 0) {
+    if (regionNamed(l.state, name)) |r| if (r.id != .zero and Split.sizeOf(r.id) > 0) {
         Split.close(r.id);
         l.extents_changed = true;
         return;
-    }
-    // Never drawn at a size, so there is nothing to slide: drop it outright.
+    };
+    // Never drawn at a size — or not drawn at all yet, made this frame — so there is nothing to
+    // slide: drop it outright.
     if (l.state.splits.collapse(l.gpa, name)) {
         if (l.state.clearExtent(l.gpa, name)) l.extents_changed = true;
         l.state.unassign(l.gpa, name);
