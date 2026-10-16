@@ -2797,6 +2797,38 @@ const FizzySplitFrame = struct {
     }
 };
 
+test "picker: its controls are named for a tape or an agent to aim at, while they can be pressed" {
+    var ctx = try shim.init(std.testing.allocator);
+    defer ctx.deinit(std.testing.allocator);
+
+    const editor = ctx.editor;
+    editor.app.gpa = std.testing.allocator;
+    defer editor.app.layout.regions.deinit(editor.app.gpa);
+    defer editor.app.layout.regions_building.deinit(editor.app.gpa);
+    defer editor.app.layout.deinitExtents(editor.app.gpa);
+    defer editor.app.layout.deinitAssignments(editor.app.gpa);
+    defer editor.app.layout.deinitQualified(editor.app.gpa);
+    defer editor.app.layout.picker.close(editor.app.gpa);
+
+    PickerFrame.editor = editor;
+    defer PickerFrame.editor = null;
+
+    try dvui.testing.settle(PickerFrame.frame);
+    editor.app.layout.picker.open(editor.app.gpa, "Main", null);
+    _ = try dvui.testing.step(PickerFrame.frame);
+    _ = try dvui.testing.step(PickerFrame.frame);
+
+    for ([_][]const u8{ "picker.mode:one", "picker.mode:many", "picker.action:split" }) |name| {
+        if (dvui.tagGet(name) == null) {
+            std.debug.print("no anchor {s}\n", .{name});
+            return error.TestExpectedEqual;
+        }
+    }
+    // Main shows nothing, so Clear is dimmed and has no name; a shape's place has no Remove.
+    try std.testing.expect(dvui.tagGet("picker.action:clear") == null);
+    try std.testing.expect(dvui.tagGet("picker.action:remove") == null);
+}
+
 test "a fizzy Main split is a removable slot, not main.slot" {
     var ctx = try shim.init(std.testing.allocator);
     defer ctx.deinit(std.testing.allocator);
