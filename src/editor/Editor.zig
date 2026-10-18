@@ -1947,9 +1947,8 @@ pub fn unloadPlugin(editor: *Editor, id: []const u8, opts: UnloadOptions) Unload
 
     // Remove all contributions + services + active-id references (before dlclose), then
     // run the plugin's own teardown.
-    editor.app.host.unregisterPlugin(plugin);
-    fizzy.backend.rebuildDynamicNativeMenus();
-    plugin.deinit();
+    // Native menus rebuilt before the plugin's `deinit`, as they may still name its strings.
+    editor.app.host.retirePlugin(plugin, fizzy.backend.rebuildDynamicNativeMenus);
 
     // Drop the unloaded plugin's keybinds by rebuilding from the survivors.
     rebuildKeybinds(editor);
@@ -2436,7 +2435,7 @@ const fizzy_api_vtable: sdk.EditorAPI.VTable = .{
     .paletteFolder = fizzyPaletteFolder,
     .pluginDataFolder = fizzyPluginDataFolder,
     .pluginRegistered = fizzyPluginRegistered,
-    .pluginUnregistered = fizzyPluginUnregistered,
+    .pluginRetired = fizzyPluginRetired,
     .getSecret = fizzyGetSecret,
     .setSecret = fizzySetSecret,
     .markSettingsDirty = fizzyMarkSettingsDirty,
@@ -2609,8 +2608,8 @@ fn fizzyPluginDataFolder(ctx: *anyopaque, id: []const u8) ?[]const u8 {
 fn fizzyPluginRegistered(ctx: *anyopaque, id: []const u8) void {
     fizzyCtx(ctx).app.pluginRegistered(id);
 }
-fn fizzyPluginUnregistered(ctx: *anyopaque, id: []const u8) void {
-    fizzyCtx(ctx).app.pluginUnregistered(id);
+fn fizzyPluginRetired(ctx: *anyopaque, id: []const u8) void {
+    fizzyCtx(ctx).app.pluginRetired(id);
 }
 fn fizzyGetSecret(ctx: *anyopaque, key: []const u8) ?[]const u8 {
     return fizzyCtx(ctx).app.secrets.get(key);
