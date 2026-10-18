@@ -689,6 +689,18 @@ pub const view_settings = "fizzy.settings";
 /// Stable workbench sidebar view id (matches `workbench.view_files`).
 pub const workbench_files_view = workbench_mod.view_files;
 
+/// A hash-map context that takes two ids for one when they differ only in ASCII case.
+const CaseInsensitive = struct {
+    pub fn hash(_: CaseInsensitive, key: []const u8) u64 {
+        var h = std.hash.Wyhash.init(0);
+        for (key) |c| h.update(&.{std.ascii.toLower(c)});
+        return h.final();
+    }
+    pub fn eql(_: CaseInsensitive, a: []const u8, b: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+};
+
 pub fn loadUserPlugins(editor: *Editor, config_folder: []const u8) void {
     if (comptime builtin.target.cpu.arch == .wasm32 or !App.loads_plugins) return;
 
@@ -737,25 +749,33 @@ pub fn loadUserPlugins(editor: *Editor, config_folder: []const u8) void {
         }
     }.lt);
 
+    // The folders by their names ignoring case, in sorted order, made once: a group of more than
+    // one is the same id several times.
+    var case_groups: std.HashMapUnmanaged([]const u8, std.ArrayListUnmanaged([]const u8), CaseInsensitive, std.hash_map.default_max_load_percentage) = .empty;
+    for (ids.items) |id| {
+        const entry = case_groups.getOrPut(editor.app.arena.allocator(), id) catch continue;
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        entry.value_ptr.append(editor.app.arena.allocator(), id) catch {};
+    }
+
     for (ids.items) |plugin_id| {
         // Skip `.load-tmp` and any other dotfile/directory — not a plugin id.
         if (plugin_id.len == 0 or plugin_id[0] == '.') continue;
 
-        // Two folders whose names differ only in case (a case-sensitive filesystem lets both
-        // exist) are one id twice: neither loads. Which one was meant cannot be told from the
-        // folders, and loading whichever sorts first would let byte order choose. One card, on
-        // the first by that order, names them both.
-        const twin: ?[]const u8 = for (ids.items) |other| {
-            if (other.ptr != plugin_id.ptr and std.ascii.eqlIgnoreCase(other, plugin_id)) break other;
-        } else null;
-        if (twin) |other| {
-            if (std.mem.lessThan(u8, plugin_id, other)) {
-                const why = std.fmt.allocPrint(editor.app.arena.allocator(), "plugin folders '{s}' and '{s}' differ only in case, so neither is loaded: remove one", .{ plugin_id, other }) catch "two plugin folders differ only in case, so neither is loaded";
+        // Folders whose names differ only in case (a case-sensitive filesystem lets them all
+        // exist) are one id several times: none loads. Which one was meant cannot be told from
+        // the folders, and loading whichever sorts first would let byte order choose. One card,
+        // on the first by that order, names every one (`case_groups`, made in one pass above).
+        if (case_groups.get(plugin_id)) |group| if (group.items.len > 1) {
+            if (group.items[0].ptr == plugin_id.ptr) {
+                var names: std.Io.Writer.Allocating = .init(editor.app.arena.allocator());
+                for (group.items, 0..) |name, i| names.writer.print("{s}'{s}'", .{ @as([]const u8, if (i > 0) ", " else ""), name }) catch {};
+                const why = std.fmt.allocPrint(editor.app.arena.allocator(), "plugin folders {s} differ only in case, so none is loaded: keep one", .{names.written()}) catch "plugin folders differ only in case, so none is loaded";
                 dvui.log.warn("user plugin '{s}': {s}", .{ plugin_id, why });
                 editor.app.recordPluginFailure(plugin_id, why, null, null, .{});
             }
             continue;
-        }
+        };
 
         // User-disabled plugins (store "disable") stay on disk but are not loaded.
         if (editor.app.isPluginDisabled(plugin_id)) {
@@ -1462,9 +1482,13 @@ pub fn loadUserPluginById(editor: *Editor, id: []const u8) !void {
     if (comptime builtin.target.cpu.arch == .wasm32 or !App.loads_plugins) return error.NotUnloadable;
     const path = try App.userPluginPath(editor.app.gpa, &editor.app, id);
     // Asked before the build is opened: a case variant of a loaded or installed id fails saying so.
-    var clash_buf: [64]u8 = undefined;
-    if (editor.app.pluginCaseClash(&clash_buf, id)) |other| {
-        editor.app.recordCaseClash(id, other, path);
+    var clash_buf: [std.fs.max_name_bytes]u8 = undefined;
+    if (editor.app.pluginCaseClash(&clash_buf, id)) |clash| {
+        switch (clash) {
+            .other => |other| editor.app.recordCaseClash(id, other, path),
+            // Refused as a possible clash: nothing says the folder is this plugin's alone.
+            .unreadable => editor.app.recordPluginFailure(id, "the plugins folder could not be read to check for a plugin whose id differs only in case", null, null, .of(path)),
+        }
         editor.app.gpa.free(path);
         return error.DuplicatePluginId;
     }
@@ -2072,16 +2096,18 @@ pub fn uninstallPlugin(editor: *Editor, id: []const u8, force: bool) !void {
     const plugin_dir = try std.fs.path.join(editor.app.gpa, &.{ editor.app.config_folder, "plugins", id });
     defer editor.app.gpa.free(plugin_dir);
     // A build refused for its case (`App.recordCaseClash`) names a folder that, on macOS and
-    // Windows, is the loaded plugin's own: its card drops, and that folder stays. Told apart by
-    // what the folder is on disk, not by its name.
-    const keep = if (editor.app.host.pluginByIdIgnoringCase(id)) |loaded| keep: {
-        if (std.mem.eql(u8, loaded.id, id)) break :keep false;
-        const loaded_dir = try std.fs.path.join(editor.app.gpa, &.{ editor.app.config_folder, "plugins", loaded.id });
-        defer editor.app.gpa.free(loaded_dir);
-        break :keep App.sameFolder(plugin_dir, loaded_dir);
-    } else false;
-    if (!keep) std.Io.Dir.cwd().deleteTree(dvui.io, plugin_dir) catch |err|
-        dvui.log.warn("uninstallPlugin '{s}': could not delete {s}: {s}", .{ id, plugin_dir, @errorName(err) });
+    // Windows, is another installed plugin's own, loaded or not: its card drops, and that folder
+    // stays. Told apart by the names the filesystem lists now, never by the name asked for.
+    const plugins_dir = try std.fs.path.join(editor.app.gpa, &.{ editor.app.config_folder, "plugins" });
+    defer editor.app.gpa.free(plugins_dir);
+    switch (@import("app").store.folders.deletable(dvui.io, plugins_dir, id)) {
+        .folder => std.Io.Dir.cwd().deleteTree(dvui.io, plugin_dir) catch |err|
+            dvui.log.warn("uninstallPlugin '{s}': could not delete {s}: {s}", .{ id, plugin_dir, @errorName(err) }),
+        // A dev setup's link: the link goes, never what it points at.
+        .link => std.Io.Dir.cwd().deleteFile(dvui.io, plugin_dir) catch |err|
+            dvui.log.warn("uninstallPlugin '{s}': could not remove the link {s}: {s}", .{ id, plugin_dir, @errorName(err) }),
+        .keep => dvui.log.info("uninstallPlugin '{s}': {s} is not this plugin's own folder alone; kept", .{ id, plugin_dir }),
+    }
     // A broken (failed-to-load) build can be uninstalled too; clear its failure record so the
     // card disappears instead of lingering as "Failed".
     editor.app.clearFailedUserPlugin(id);
@@ -7112,15 +7138,6 @@ const plugin_manager_vtable: PluginManager.VTable = .{
     .revealMain = struct {
         fn f(ctx: *anyopaque) void {
             pmSelf(ctx).revealCenter();
-        }
-    }.f,
-    .refuseCaseClash = struct {
-        fn f(ctx: *anyopaque, id: []const u8) bool {
-            const app = &pmSelf(ctx).app;
-            var buf: [64]u8 = undefined;
-            const other = app.pluginCaseClash(&buf, id) orelse return false;
-            app.recordCaseClash(id, other, null);
-            return true;
         }
     }.f,
 };

@@ -43,6 +43,7 @@ pub const PluginEnabledState = enum { unset, enabled, disabled };
 const Layout = @import("layout/Layout.zig");
 const Host = sdk.Host;
 const PluginLoader = @import("root.zig").store.Loader;
+const store = @import("root.zig").store;
 const SettingsWatcher = @import("watch/SettingsWatcher.zig");
 const ControlServer = @import("control/Server.zig");
 const ControlState = @import("control/routes.zig").State;
@@ -962,30 +963,40 @@ pub fn deinit(app: *App) void {
     app.auto_update_off_ids.deinit(app.gpa);
 }
 
-/// The id another plugin goes by that `id` is in another case: a loaded plugin's
-/// (`Host.pluginByIdIgnoringCase`), or a folder in `plugins/`. Asked before anything keyed by
-/// `id` touches the disk (a store install or update, a load): on macOS and Windows `plugins/Graphl`
-/// *is* `plugins/graphl`, so writing one would overwrite the other. Written into `buf`.
-pub fn pluginCaseClash(app: *App, buf: *[64]u8, id: []const u8) ?[]const u8 {
-    if (app.host.pluginByIdIgnoringCase(id)) |p| if (!std.mem.eql(u8, p.id, id)) {
-        const n = @min(p.id.len, buf.len);
-        @memcpy(buf[0..n], p.id[0..n]);
-        return buf[0..n];
-    };
+/// Why a build of `id` may not be installed or loaded: another plugin goes by `id` in another
+/// case, loaded or with a folder in `plugins/` (on macOS and Windows `plugins/Graphl` *is*
+/// `plugins/graphl`, so writing one would overwrite the other), or `plugins/` cannot be read to
+/// tell, which is refused as a possible clash.
+pub const CaseClash = union(enum) {
+    /// The other plugin's id or folder name. Borrowed from the loaded plugin, or from the
+    /// listing it was read from.
+    other: []const u8,
+    unreadable,
+};
+
+/// `id`'s clash with what is loaded and with `folders`, a listing of `plugins/`
+/// (`store.folders.read`). Asked before anything keyed by `id` touches the disk.
+pub fn caseClashIn(app: *App, folders: store.folders.Folders, id: []const u8) ?CaseClash {
+    if (app.host.pluginByIdIgnoringCase(id)) |p| if (!std.mem.eql(u8, p.id, id)) return .{ .other = p.id };
+    return .{ .other = store.folders.clash(folders.names, id) orelse return null };
+}
+
+/// The clash `recordCaseClash` explains, for a load (`Editor.loadUserPluginById`, the startup
+/// scan): `plugins/` read now. The name is copied into `buf`, whole; one that does not fit is
+/// refused as unreadable rather than shown cut off.
+pub fn pluginCaseClash(app: *App, buf: []u8, id: []const u8) ?CaseClash {
     if (comptime builtin.target.cpu.arch == .wasm32) return null;
-    const plugins_dir = std.fs.path.join(app.gpa, &.{ app.config_folder, "plugins" }) catch return null;
+    const plugins_dir = std.fs.path.join(app.gpa, &.{ app.config_folder, "plugins" }) catch return .unreadable;
     defer app.gpa.free(plugins_dir);
-    var dir = std.Io.Dir.cwd().openDir(dvui.io, plugins_dir, .{ .iterate = true }) catch return null;
-    defer dir.close(dvui.io);
-    var it = dir.iterate();
-    while (it.next(dvui.io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
-        if (std.mem.eql(u8, entry.name, id) or !std.ascii.eqlIgnoreCase(entry.name, id)) continue;
-        const n = @min(entry.name.len, buf.len);
-        @memcpy(buf[0..n], entry.name[0..n]);
-        return buf[0..n];
-    }
-    return null;
+    const folders = store.folders.read(app.gpa, dvui.io, plugins_dir) catch return .unreadable;
+    defer folders.deinit(app.gpa);
+    return switch (app.caseClashIn(folders, id) orelse return null) {
+        .unreadable => .unreadable,
+        .other => |name| if (name.len <= buf.len) blk: {
+            @memcpy(buf[0..name.len], name);
+            break :blk .{ .other = buf[0..name.len] };
+        } else .unreadable,
+    };
 }
 
 /// The card for a build of `id` refused because `other`, the same id in another case, is loaded or
@@ -998,16 +1009,6 @@ pub fn recordCaseClash(app: *App, id: []const u8, other: []const u8, path: ?[]co
     const probe = if (comptime builtin.target.cpu.arch == .wasm32) null else if (path) |p| PluginLoader.probeVersionInfo(p) else null;
     app.clearFailedUserPlugin(id);
     app.recordPluginFailure(id, why, null, if (probe) |info| info.plugin_version else null, if (path) |p| .of(p) else .{});
-}
-
-/// Whether two paths name one folder: the same file on the same device, so a case-insensitive
-/// filesystem's `plugins/Graphl` and `plugins/graphl` are one, and a case-sensitive one's are
-/// two. False when either cannot be read.
-pub fn sameFolder(a: []const u8, b: []const u8) bool {
-    if (comptime builtin.target.cpu.arch == .wasm32) return false;
-    const sa = std.Io.Dir.cwd().statFile(dvui.io, a, .{}) catch return false;
-    const sb = std.Io.Dir.cwd().statFile(dvui.io, b, .{}) catch return false;
-    return sa.inode == sb.inode;
 }
 
 /// `<config>/plugins/<id>/<id>.<ext>` — where a user plugin's build lives. Caller frees.
