@@ -133,6 +133,8 @@ command_palette: @import("CommandPalette.zig") = .{},
 demo: Demo = .detached,
 /// Tapes playing in tabs of their own (`Demo: Play a Tape…`, the transport's share).
 tape_tabs: TapeTabs = .{},
+/// The recording setting as last applied (`tick`); null before the first frame.
+record_history_applied: ?bool = null,
 /// A part of a document's history to export (the strip's export window): at the top of the next
 /// frame, before anything draws, since the export walks the document's history back and forth.
 share_pending: ?struct { doc_id: u64, from: usize, to: usize } = null,
@@ -2061,9 +2063,9 @@ fn storeUninstalled(arena: std.mem.Allocator) []const @import("app").layout.Stat
 }
 
 pub fn postInit(editor: *Editor) !void {
-    // Documents' tracks, while they are behind a switch (plans/RECORDING_PLAN.md, step 3).
+    // Documents' tracks (plans/RECORDING_PLAN.md): on as the setting says (`record_history`),
+    // applied each time it changes (`tick`).
     editor.app.tracks = .init(editor.app.gpa);
-    if (Popout.envSwitch("FIZZY_TRACKS") orelse false) editor.setTracking(true);
     if (comptime build_opts.has_app_layout) {
         dvui.log.info("layout: app-supplied", .{});
     } else {
@@ -3120,8 +3122,10 @@ pub fn keepTape(editor: *Editor, arena: std.mem.Allocator, doc: sdk.DocHandle, b
 }
 
 /// Record documents' tracks, or stop. Documents open now get one; those opened after too.
+/// Off, what was recorded is forgotten: documents keep only their undo history.
 pub fn setTracking(editor: *Editor, on: bool) void {
     const t = &(editor.app.tracks orelse return);
+    if (!on and t.on) t.deinit();
     t.on = on;
     editor.app.host.recorder = if (on) t.recorder() else null;
     if (on) for (editor.app.open_files.values()) |doc| t.opened(doc);
@@ -3626,6 +3630,7 @@ pub fn reconcileExternalSettingsChange(editor: *Editor) void {
     editor.app.settings.native_menus = parsed.native_menus;
     editor.app.settings.native_dialogs = parsed.native_dialogs;
     editor.app.settings.black_box = parsed.black_box;
+    editor.app.settings.record_history = parsed.record_history;
     editor.app.settings.control_server = parsed.control_server;
     editor.app.settings.input_scheme = parsed.input_scheme;
     editor.app.settings.plugin_update_mode = parsed.plugin_update_mode;
@@ -4112,6 +4117,15 @@ pub fn tick(editor: *Editor) !dvui.App.Result {
     editor.app.file_table.pump();
     // Saves whose encode finished on their worker: on to their write, or done.
     editor.doc_io.tick();
+    // Recording as the setting says, when it changed (`FIZZY_TRACKS` over it): a command that
+    // turned it on or off (`fizzy.tracks.record`) holds until the setting next changes.
+    {
+        const want = Popout.envSwitch("FIZZY_TRACKS") orelse editor.app.settings.record_history;
+        if (editor.record_history_applied != want) {
+            editor.record_history_applied = want;
+            editor.setTracking(want);
+        }
+    }
     // The document states tracks asked for since last frame, before anything draws.
     if (editor.app.tracks) |*t| t.tick();
     if (editor.share_pending) |p| {
@@ -6695,6 +6709,8 @@ pub fn deinit(editor: *Editor) !void {
         // The registry itself goes with `host.deinit` below; these are the app's own strings.
         var it = editor.doc_surfaces.valueIterator();
         while (it.next()) |ds| {
+            // Its history's pictures, taken while it recorded.
+            ds.*.frames.deinit(editor.app.gpa);
             editor.app.gpa.free(ds.*.id);
             editor.app.gpa.destroy(ds.*);
         }
