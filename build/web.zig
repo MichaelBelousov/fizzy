@@ -1,4 +1,5 @@
 const std = @import("std");
+const common = @import("common.zig");
 const helpers = @import("../plugins/shared/build/helpers.zig");
 const core_mod = @import("fizzy_sdk").core_module;
 const plugins = @import("plugins.zig");
@@ -66,7 +67,7 @@ pub fn addSteps(
             .optimize = optimize,
             .link_libc = false,
             .single_threaded = true,
-            .strip = optimize == .ReleaseFast or optimize == .ReleaseSmall,
+            .strip = optimize == .fast or optimize == .small,
         }),
     });
     web_exe.entry = .disabled;
@@ -204,7 +205,8 @@ pub fn addSteps(
     for (web_plugin_dirs) |wp| {
         const dir = wp.dir;
         const zon_path = b.pathJoin(&.{ dir, "plugin.zig.zon" });
-        b.build_root.handle.access(b.graph.io, zon_path, .{}) catch {
+        common.dependOnPathExistence(b, zon_path);
+        b.root.access(b.graph.io, zon_path, .{}) catch {
             std.debug.print("fizzy web: plugin checkout '{s}' not found; the web build goes without it\n", .{dir});
             continue;
         };
@@ -309,7 +311,11 @@ pub fn addSteps(
     }
     for (web_pages.items) |page| {
         const web_dir = b.pathJoin(&.{ page.dir, "web" });
-        var d = b.build_root.handle.openDir(b.graph.io, web_dir, .{ .iterate = true }) catch continue;
+        var d = b.root.openDir(b.graph.io, web_dir, .{ .iterate = true }) catch {
+            common.dependOnPathExistence(b, web_dir);
+            continue;
+        };
+        b.dependOnDirectoryContents(b.path(web_dir));
         defer d.close(b.graph.io);
         var it = d.iterate();
         while (it.next(b.graph.io) catch null) |entry| {
@@ -361,7 +367,8 @@ fn stampStorage(b: *std.Build) std.Build.LazyPath {
         else => std.debug.panic("-Dweb-storage={s}: only a-z, 0-9, '-' and '_'", .{name}),
     };
     const token = "__FIZZY_WEB_STORAGE__";
-    const html = b.build_root.handle.readFileAlloc(b.graph.io, "web/index.html", b.allocator, .unlimited) catch |err|
+    b.dependOnFileContents(b.path("web/index.html"));
+    const html = std.Io.Dir.cwd().readFileAlloc(b.graph.io, b.root.joinString(b.allocator, "web/index.html") catch @panic("OOM"), b.allocator, .unlimited) catch |err|
         std.debug.panic("web/index.html: {t}", .{err});
     if (std.mem.indexOf(u8, html, token) == null) std.debug.panic("web/index.html: no {s} to stamp", .{token});
     const stamped = std.mem.replaceOwned(u8, b.allocator, html, token, name) catch @panic("OOM");
@@ -391,7 +398,9 @@ fn demoTapes(b: *std.Build) std.Build.LazyPath {
     tool.root_module.addImport("demos", demos);
     const run = b.addRunArtifact(tool);
     const out = run.addOutputDirectoryArg("demos");
-    var dir = b.build_root.handle.openDir(b.graph.io, "docs/demos", .{ .iterate = true }) catch |err|
+    // Declared, so a demo added or removed reconfigures the build.
+    b.dependOnDirectoryContents(b.path("docs/demos"));
+    var dir = b.root.openDir(b.graph.io, "docs/demos", .{ .iterate = true }) catch |err|
         std.debug.panic("docs/demos: {t}", .{err});
     defer dir.close(b.graph.io);
     var it = dir.iterate();

@@ -1080,8 +1080,8 @@ fn shadowedByHigherLayer(editor: *Editor, binding: Keymap.Binding, command_id: [
         else if (binding.owner_id) |b| (if (other.owner_id) |o| std.mem.eql(u8, b, o) else false) else false;
         if (!same_owner) continue;
 
-        const mine = (@as(u16, @intFromEnum(binding.source)) << 8) | binding.when.weight();
-        const theirs = (@as(u16, @intFromEnum(other.source)) << 8) | other.when.weight();
+        const mine = (@as(u16, @backingInt(binding.source)) << 8) | binding.when.weight();
+        const theirs = (@as(u16, @backingInt(other.source)) << 8) | other.when.weight();
         if (theirs > mine) return true;
     }
     return false;
@@ -1159,7 +1159,7 @@ fn bestBinding(editor: *Editor, command: []const u8) ?Keymap.Binding {
         if (b.args.len > 0) continue;
         if (!std.mem.eql(u8, cmd, command)) continue;
         if (best) |cur| {
-            if (@intFromEnum(b.source) >= @intFromEnum(cur.source)) best = b;
+            if (@backingInt(b.source) >= @backingInt(cur.source)) best = b;
         } else best = b;
     }
     return best;
@@ -1428,7 +1428,7 @@ pub fn webKeyBound(key_len: usize, mods_bits: u32) bool {
     };
     var buf: [16]u8 = undefined;
     const key = webKey(web_key_buf[0..key_len], &buf) orelse return false;
-    const function_key = @intFromEnum(key) >= @intFromEnum(Keymap.Key.f1) and @intFromEnum(key) <= @intFromEnum(Keymap.Key.f25);
+    const function_key = @backingInt(key) >= @backingInt(Keymap.Key.f1) and @backingInt(key) <= @backingInt(Keymap.Key.f25);
     if (!mods.ctrl and !mods.command and !function_key) return false;
 
     // Recording a new binding: every such chord is data for the settings pane, not the browser's.

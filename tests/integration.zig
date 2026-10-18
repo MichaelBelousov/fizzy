@@ -689,8 +689,8 @@ fn markdownSettle() !void {
     // always the same shape: which blocks are still owed a measure, and in what state. Printing
     // the tally is what turned "the layout never settles" into "164 of 185 blocks were never
     // measured once, because the resettle budget was gated on being near the viewport".
-    var counts = [_]usize{0} ** 4;
-    for (md_preview.rs.blocks.heights.items) |e| counts[@intFromEnum(e.state)] += 1;
+    var counts = @as([4]usize, @splat(0));
+    for (md_preview.rs.blocks.heights.items) |e| counts[@backingInt(e.state)] += 1;
     std.debug.print(
         "\nnever settled: blocks={d} estimated={d} measured={d} settled={d} deferred={d} pending_measure={d}\n",
         .{ md_preview.rs.blocks.heights.items.len, counts[0], counts[1], counts[2], counts[3], md_render_ast.stats.pending_measure },
@@ -1620,8 +1620,8 @@ test "markdown preview: stops asking for frames so the app can sleep" {
 
         try markdownAwaitParse();
         if (!try markdownReachesIdle()) {
-            var counts = [_]usize{0} ** 4;
-            for (md_preview.rs.blocks.heights.items) |e| counts[@intFromEnum(e.state)] += 1;
+            var counts = @as([4]usize, @splat(0));
+            for (md_preview.rs.blocks.heights.items) |e| counts[@backingInt(e.state)] += 1;
             std.debug.print(
                 "\nnever idle: estimated={d} measured={d} settled={d} deferred={d} pending_measure={d}\n",
                 .{ counts[0], counts[1], counts[2], counts[3], md_render_ast.stats.pending_measure },
@@ -4148,7 +4148,7 @@ test "a place closing for good is not still holding its padding and its sash" {
 
 const DropFinishFrame = struct {
     var editor: ?*fizzy.Editor = null;
-    const key: dvui.Id = @enumFromInt(0xd7_0b_f1_4e);
+    const key: dvui.Id = @fromBackingInt(@intCast(0xd7_0b_f1_4e));
 
     fn frame() anyerror!dvui.App.Result {
         const e = editor.?;
@@ -4705,7 +4705,7 @@ test "drop: a place with room for the wheel keeps it" {
 
 const ShapeFrame = struct {
     var wheel: DZ.Wheel = undefined;
-    const key: dvui.Id = @enumFromInt(0x5a_a9_e0_01);
+    const key: dvui.Id = @fromBackingInt(@intCast(0x5a_a9_e0_01));
 
     fn frame() anyerror!dvui.App.Result {
         _ = DZ.draw(key, wheel, 1, .{});
@@ -5548,7 +5548,10 @@ test "verdict: the soak tape is a demo, and its expectations read" {
     // It ends on a wait, so what closed last has time to close before the windows are counted.
     try std.testing.expect(owned.tape.ops[owned.tape.ops.len - 1].do == .wait);
 
-    const expect = try std.zon.parse.fromSlice(fizzy.verdict.Expect, std.testing.allocator, @embedFile("soak_expect"), null, .{});
+    var expect_arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer expect_arena.deinit();
+    var expect_diag: std.zon.parse.Diagnostics = undefined;
+    const expect = try std.zon.parse.fromSliceNoAlloc(fizzy.verdict.Expect, .{ .gpa = std.testing.allocator, .arena = expect_arena.allocator(), .source = @embedFile("soak_expect"), .diagnostics = &expect_diag });
     try std.testing.expect(!expect.allow_leaks);
     try std.testing.expectEqual(@as(u32, 0), expect.max_sdl_errors);
     try std.testing.expectEqual(@as(?u32, null), expect.os_windows);
@@ -5564,7 +5567,7 @@ test "demo: the hand-written sample tape parses and round-trips" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try owned.tape.write(&out.writer);
-    const again = try std.testing.allocator.dupeZ(u8, out.written());
+    const again = try std.testing.allocator.dupeSentinel(u8, out.written(), 0);
     defer std.testing.allocator.free(again);
     var back = try automation.Tape.parse(std.testing.allocator, again, automation.Input.check);
     defer back.deinit();
@@ -5716,10 +5719,12 @@ test "float: the saved layout brings it back, and Reset Layout takes it away" {
     defer out.deinit();
     try std.zon.stringify.serializeMaxDepth(regions, .{}, &out.writer, 64);
     gpa.free(regions);
-    const text = try gpa.dupeZ(u8, out.written());
+    const text = try gpa.dupeSentinel(u8, out.written(), 0);
     defer gpa.free(text);
-    const saved = try std.zon.parse.fromSliceAlloc([]fizzy.backend.SavedRegion, gpa, text, null, .{ .ignore_unknown_fields = true });
-    defer std.zon.parse.free(gpa, saved);
+    var saved_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer saved_arena.deinit();
+    var saved_diag: std.zon.parse.Diagnostics = undefined;
+    const saved = try std.zon.parse.fromSlice([]fizzy.backend.SavedRegion, .{ .gpa = gpa, .arena = saved_arena.allocator(), .source = text, .diagnostics = &saved_diag, .ignore_unknown_fields = true });
 
     editor.app.layout.resetLayout(gpa);
     try dvui.testing.settle(ManyPanelFrame.frame);
@@ -5769,7 +5774,7 @@ test "float: a drag aims at a float's place over it, at nothing over its header,
         .rect = .{ .x = 100, .y = 50, .w = 150, .h = 130 },
         .home = "Panel",
         .fresh = false,
-        .win_id = @enumFromInt(0xf10a7),
+        .win_id = @fromBackingInt(@intCast(0xf10a7)),
         .bounds = window,
         .header = header,
     });
@@ -5823,7 +5828,7 @@ const FloatOverMain = struct {
             .rect = .{ .x = 100, .y = 50, .w = 150, .h = 130 },
             .home = "Panel",
             .fresh = false,
-            .win_id = @enumFromInt(0xf10a7),
+            .win_id = @fromBackingInt(@intCast(0xf10a7)),
             .bounds = win,
             .header = head,
         });
@@ -6985,7 +6990,7 @@ const ControlOneShot = struct {
             if (std.mem.endsWith(u8, self.reply[0..self.len], "\r\n\r\n")) break;
         }
         const key = "content-length: ";
-        const i = std.ascii.indexOfIgnoreCase(self.reply[0..self.len], key) orelse return;
+        const i = std.ascii.findIgnoreCase(self.reply[0..self.len], key) orelse return;
         const end = std.mem.indexOfPos(u8, self.reply[0..self.len], i, "\r\n") orelse return;
         const want = std.fmt.parseInt(usize, self.reply[i + key.len .. end], 10) catch return;
         r.interface.readSliceAll(self.reply[self.len..][0..want]) catch return;
@@ -7470,17 +7475,21 @@ const HeardEvents = struct {
     fn handler(state: *anyopaque, e: sdk.events.Event) void {
         const self: *HeardEvents = @ptrCast(@alignCast(state));
         const gpa = std.heap.smp_allocator;
-        const src = gpa.dupeZ(u8, e.payload) catch return;
+        const src = gpa.dupeSentinel(u8, e.payload, 0) catch return;
         defer gpa.free(src);
         // A batch of disk changes is heard by its first path, everything else by its `.path`.
         const path = if (std.mem.eql(u8, e.name, "fizzy.files.changed")) files: {
-            const changed = std.zon.parse.fromSliceAlloc(sdk.events.FilesChanged, gpa, src, null, .{ .ignore_unknown_fields = true }) catch return;
-            defer std.zon.parse.free(gpa, changed);
+            var changed_arena: std.heap.ArenaAllocator = .init(gpa);
+            defer changed_arena.deinit();
+            var changed_diag: std.zon.parse.Diagnostics = undefined;
+            const changed = std.zon.parse.fromSlice(sdk.events.FilesChanged, .{ .gpa = gpa, .arena = changed_arena.allocator(), .source = src, .diagnostics = &changed_diag, .ignore_unknown_fields = true }) catch return;
             if (changed.events.len == 0) return;
             break :files gpa.dupe(u8, changed.events[0].path) catch return;
         } else plain: {
-            const payload = std.zon.parse.fromSliceAlloc(sdk.events.Path, gpa, src, null, .{ .ignore_unknown_fields = true }) catch return;
-            defer std.zon.parse.free(gpa, payload);
+            var payload_arena: std.heap.ArenaAllocator = .init(gpa);
+            defer payload_arena.deinit();
+            var payload_diag: std.zon.parse.Diagnostics = undefined;
+            const payload = std.zon.parse.fromSlice(sdk.events.Path, .{ .gpa = gpa, .arena = payload_arena.allocator(), .source = src, .diagnostics = &payload_diag, .ignore_unknown_fields = true }) catch return;
             break :plain gpa.dupe(u8, payload.path) catch return;
         };
         self.events.append(gpa, .{ .name = gpa.dupe(u8, e.name) catch return, .path = path }) catch gpa.free(path);
@@ -7789,7 +7798,8 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
                     .ok => |r| r orelse return error.TestUnexpectedResult,
                     else => return error.TestUnexpectedResult,
                 };
-                return std.zon.parse.fromSliceAlloc(Read, h.arena(), try h.arena().dupeZ(u8, zon), null, .{ .ignore_unknown_fields = true });
+                var diag: std.zon.parse.Diagnostics = undefined;
+                return std.zon.parse.fromSlice(Read, .{ .gpa = h.arena(), .arena = h.arena(), .source = try h.arena().dupeSentinel(u8, zon, 0), .diagnostics = &diag, .ignore_unknown_fields = true });
             }
         }.read;
 
@@ -7827,7 +7837,8 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
             try std.testing.expectEqualStrings(notes, front.owner.documentPath(front));
             const Caret = struct { caret: struct { line: u32, column: u32 } };
             const out = host.callCommand("text.read", notes_args, host.arena()).ok.?;
-            const at = try std.zon.parse.fromSliceAlloc(Caret, host.arena(), try host.arena().dupeZ(u8, out), null, .{ .ignore_unknown_fields = true });
+            var at_diag: std.zon.parse.Diagnostics = undefined;
+            const at = try std.zon.parse.fromSlice(Caret, .{ .gpa = host.arena(), .arena = host.arena(), .source = try host.arena().dupeSentinel(u8, out, 0), .diagnostics = &at_diag, .ignore_unknown_fields = true });
             try std.testing.expectEqual(@as(u32, 3), at.caret.line);
             try std.testing.expectEqual(@as(u32, 4), at.caret.column);
         }
@@ -8747,7 +8758,8 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
             // has passed on screen, which a few test frames are not.
             profile: struct { frame: struct { fps: f64 } },
         };
-        const stats = try std.zon.parse.fromSliceAlloc(Stats, host.arena(), try host.arena().dupeZ(u8, zon), null, .{ .ignore_unknown_fields = true });
+        var stats_diag: std.zon.parse.Diagnostics = undefined;
+        const stats = try std.zon.parse.fromSlice(Stats, .{ .gpa = host.arena(), .arena = host.arena(), .source = try host.arena().dupeSentinel(u8, zon, 0), .diagnostics = &stats_diag, .ignore_unknown_fields = true });
         try std.testing.expect(for (stats.plugins) |pl| {
             if (std.mem.eql(u8, pl.id, "devtools")) break pl.link == .bundled;
         } else false);
@@ -8767,7 +8779,8 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
             else => return error.TestUnexpectedResult,
         };
         const Written = struct { path: []const u8, frames: u64 };
-        const written = try std.zon.parse.fromSliceAlloc(Written, host.arena(), try host.arena().dupeZ(u8, zon), null, .{ .ignore_unknown_fields = true });
+        var written_diag: std.zon.parse.Diagnostics = undefined;
+        const written = try std.zon.parse.fromSlice(Written, .{ .gpa = host.arena(), .arena = host.arena(), .source = try host.arena().dupeSentinel(u8, zon, 0), .diagnostics = &written_diag, .ignore_unknown_fields = true });
         try std.testing.expect(written.frames > 0);
         const input_path = try std.fs.path.join(host.arena(), &.{ written.path, "input.bin" });
         const bytes = try std.Io.Dir.cwd().readFileAlloc(dvui.io, input_path, host.arena(), .unlimited);
@@ -9083,7 +9096,7 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
     // A quit straight after a pane slid shut (`snapshotClosingPane`): the pane still holds its
     // picture, and the quit comes after the last frame, when nothing can be freed at a frame's end.
     {
-        const pixels = [_]u8{0} ** (4 * 4 * 4);
+        const pixels: [4 * 4 * 4]u8 = @splat(0);
         const snap = try t.window.backend.textureCreate(&pixels, .{ .width = 4, .height = 4 });
         editor.workbench.workspaces.values()[0].closing_snapshot = snap;
     }
@@ -9270,7 +9283,7 @@ test "automation service: refused while something drives the app, or for a demo'
     // A demo's tape opens on a keyframe; garbage is no tape at all. Both say why.
     try std.testing.expectEqualStrings("KeyframeInLiveTape", api.play(demo).invalid);
     try std.testing.expect(api.play("not a tape") == .invalid);
-    try std.testing.expect(api.outcome(@enumFromInt(12345)) == .unknown);
+    try std.testing.expect(api.outcome(@fromBackingInt(@intCast(12345))) == .unknown);
 
     // A demo loaded: refused, and nothing is settled while it plays.
     service_demo_loaded = true;
@@ -9281,7 +9294,7 @@ test "automation service: refused while something drives the app, or for a demo'
     // One tape at a time, and only its own ticket stops it.
     const ticket = try started(api.play(live));
     try std.testing.expect(api.play(live) == .busy);
-    api.stop(@enumFromInt(@intFromEnum(ticket) + 1));
+    api.stop(@fromBackingInt(@intCast(@backingInt(ticket) + 1)));
     try std.testing.expect(api.outcome(ticket) == .playing);
     api.stop(ticket);
     try std.testing.expect(api.outcome(ticket) == .stopped);
@@ -9350,7 +9363,11 @@ test "the output panel settles at its tail with a line wider than it anywhere in
     defer t.deinit();
     defer fizzy.OutputLog.clear();
 
-    const wide = "a line far wider than the panel " ** 12;
+    const wide = comptime blk: {
+        var s: []const u8 = "";
+        for (0..12) |_| s = s ++ "a line far wider than the panel ";
+        break :blk s;
+    };
     const rows = 40;
     // The wide line at each of the last rows in turn, wherever the top of the view falls.
     for (0..20) |from_tail| {

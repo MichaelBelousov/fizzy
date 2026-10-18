@@ -163,7 +163,7 @@ which produces:
 .{
     .name = .my_plugin,
     .version = "0.1.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .paths = .{ "build.zig", "build.zig.zon", "plugin.zig", "plugin.zig.zon", "src" },
     .fingerprint = 0x0000000000000000, // zig fills this in on first `zig build`
     .dependencies = .{
@@ -222,6 +222,11 @@ straight from `plugin.zig.zon` (§2.2), so there is exactly one source of truth.
 libraries (vendored C, packed assets). See `fizzy.plugin.addCModule` and
 [pixi's `build.zig`](https://github.com/fizzyedit/pixi/blob/main/build.zig) for a worked example
 with vendored C deps.
+
+A plugin that ships a program of its own (a helper it starts, as the agent plugin starts
+`fizzy-mcp`) builds it as usual and passes it to `fizzy.plugin.installBeside(b, exe, .{ .plugin =
+"<id>" })`: `zig build install` then copies it into the plugin's own directory, beside the
+library and still executable, where the plugin finds it at run time.
 
 Under `create`, the dylib's C-ABI entry point (the five symbols the host looks up at `dlopen`
 time — ABI fingerprint check, the `register` entry, and injection hooks for the
@@ -1652,7 +1657,7 @@ jobs:
     permissions:
       contents: write
     with:
-      zig-version: "0.16.0"
+      zig-version: "0.17.0"
 ```
 
 Bump the `sdk-v*` tag your `build.zig.zon` pins when you want a new SDK; the next tag's manifest picks up

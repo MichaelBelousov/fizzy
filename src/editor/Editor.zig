@@ -25,7 +25,7 @@ const build_opts = @import("build_opts");
 /// dvui's demo window (View › Show DVUI Demo), in Debug builds only. Calling it at all links the
 /// whole of it — every example, widgetpedia's raw images, the demos' own source for its code
 /// viewer — into a release, where no one opens it: on the web that is download size.
-pub const dvui_demo = builtin.mode == .Debug;
+pub const dvui_demo = builtin.mode == .debug;
 
 const fizzy = @import("../fizzy.zig");
 const dvui = @import("dvui");
@@ -893,8 +893,8 @@ pub fn builtinManifest(editor: *Editor, id: []const u8) ?sdk.Manifest {
     inline for (bundled_plugins) |m| {
         if (std.mem.eql(u8, m.plugin_id, id)) {
             const frame_gpa = editor.app.arena.allocator();
-            const zon = frame_gpa.dupeZ(u8, m.plugin_options.manifest_zon) catch return null;
-            return sdk.Manifest.parse(frame_gpa, zon) catch return null;
+            const zon = frame_gpa.dupeSentinel(u8, m.plugin_options.manifest_zon, 0) catch return null;
+            return sdk.Manifest.parse(frame_gpa, frame_gpa, zon) catch return null;
         }
     }
     return null;
@@ -3212,7 +3212,7 @@ pub fn drawActiveCenter(editor: *Editor) !dvui.App.Result {
             self.slot.packed_children = 0;
             self.slot.total_weight = 0;
             self.slot.min_space_taken = 0;
-            if (builtin.mode == .Debug) self.slot.child_id = .zero;
+            if (builtin.mode == .debug) self.slot.child_id = .zero;
         }
     };
 
@@ -3619,11 +3619,12 @@ pub fn reconcileExternalSettingsChange(editor: *Editor) void {
     // plugin's settings. Left unreconciled until another external change retriggers a read
     // (rare in practice: the watcher's debounce already gives a normal atomic save time to
     // settle before this runs at all).
-    const parsed = Settings.parseOnly(gpa, data) catch |err| {
+    var parsed_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer parsed_arena.deinit();
+    const parsed = Settings.parseOnly(gpa, parsed_arena.allocator(), data) catch |err| {
         dvui.log.warn("settings watcher: could not parse external settings.zon change ({s}); skipping this reconciliation", .{@errorName(err)});
         return;
     };
-    defer Settings.freeParsed(gpa, parsed);
 
     // Fizzy fields, one at a time rather than `editor.app.settings = parsed` wholesale: `theme` is
     // runtime-owned (see its doc comment on `Settings`) and must not be clobbered by the raw
