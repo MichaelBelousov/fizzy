@@ -316,12 +316,16 @@ pub fn draw(self: *HistoryTransport, doc: sdk.DocHandle, area: dvui.Rect.Physica
             .liquid = if (opts.corner != null) &self.liquid else null,
         };
         if (p <= 0) if (opts.corner) |c| {
+            // Where it is, for a bar that would cover it to stand clear (`dome.barsOut`).
+            dome.publishBar(c.box(dvui.windowRectScale().s));
             if (dome.drawCorner(c, id_extra, grip_look, "history.grip:{s}", .{doc.owner.documentPath(doc)})) self.stir(now);
         } else if (gripRect(area, dome.radius, opts.edge)) |g| if (dome.draw(g, id_extra, grip_look, "history.grip:{s}", .{doc.owner.documentPath(doc)})) self.stir(now);
         if (self.dwell.since != null or self.stepped_at != null or !self.slosh.settled(now) or self.presence.moving(in_use) or
             (opts.corner != null and !self.liquid.settled())) dvui.refresh(null, @src(), null);
     }
     if (p <= 0) return pressed;
+    // Out: where, for a bar that would cover it to stand clear (`dome.barsOut`).
+    if (self.place(area, now)) |pl| dome.publishBar(pl);
     const arena = dvui.currentWindow().arena();
     const line = doc.owner.historyLine(doc, arena) orelse return pressed;
     const n = line.entries.len;
@@ -555,7 +559,7 @@ pub fn draw(self: *HistoryTransport, doc: sdk.DocHandle, area: dvui.Rect.Physica
         // (the tab into the bar). The one soft shadow of the merged shape is the orb's
         // (`plans/LIQUID_EDGE_PLAN.md`); the rim and lens are what set the glass off meanwhile.
         // Out of a corner vial, cut by the card's outline, curve and all, as the vial is at rest.
-        core.dialogs.glassBubbles(fid, shapes[0..count], s, .{ .merge = if (opts.corner != null) dome.cornerMerge(p, 14) else dome.merge(p, 14), .shadow = 0, .edge = if (opts.corner) |c| c.place() else null });
+        core.dialogs.glassBubbles(fid, shapes[0..count], s, .{ .merge = if (opts.corner != null) dome.homeMerge(p, 14) else dome.merge(p, 14), .shadow = 0, .edge = if (opts.corner) |c| c.place() else null });
     }
     // A corner vial's contents change with it rather than fade: its liquid drains as the stream
     // pours out into the line and fills again as it pours back, and its icon shrinks into the

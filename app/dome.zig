@@ -126,13 +126,14 @@ pub fn merge(p: f32, settled: f32) f32 {
     return std.math.lerp(28, settled, smooth((p - 0.3) / 0.6));
 }
 
-/// `merge` for a bar growing out of a corner vial: none at all at the very start and end, so the
-/// glass the bar goes back into is the vial's own outline, not the vial swollen by the drops
-/// sinking into it, and the vial at rest takes over from it without a step.
-pub fn cornerMerge(p: f32, settled: f32) f32 {
+/// `merge` for a bar growing out of a home its bubbles change back into (a corner vial: a card's,
+/// or the window's): none at all at the very start and end, so the glass the bar goes back into is
+/// the home's own outline, not the home swollen by the bubbles arriving on it, and the home at rest
+/// takes over without a step.
+pub fn homeMerge(p: f32, settled: f32) f32 {
     return merge(p, settled) * smooth(p / corner_merge_in);
 }
-/// How far along the growing a corner vial's glass reaches out to the drops leaving it in full.
+/// How far along the growing a home's glass reaches out to the bubbles leaving it in full.
 const corner_merge_in: f32 = 0.25;
 
 /// The clip that keeps the glass growing out of the dome at `from` from reaching past the edge it
@@ -158,6 +159,7 @@ pub fn tabRect(whole: dvui.Rect) dvui.Rect {
 /// The tab's chevron, in the middle of its bubble `r` (window-natural; `bounds` the layer's).
 pub fn chevron(bounds: dvui.Rect, r: dvui.Rect, color: dvui.Color) void {
     const d = r.w * 0.44;
+    if (d < 2) return;
     core.icon.icon(@src(), "dome_collapse", icons.tvg.lucide.@"chevron-down", .{
         .stroke_color = .{ .color = color },
         .fill_color = .{ .color = color },
@@ -337,6 +339,10 @@ const corner_icon: f32 = 13;
 pub const Corner = struct {
     card: dvui.Rect.Physical,
     radii: [4]f32 = @splat(0),
+    /// The icon over its liquid, and the name it is cached by: the history's, or what else stands
+    /// in a corner (a playing tape's, in the window's own).
+    icon: []const u8 = icons.tvg.lucide.history,
+    icon_name: []const u8 = "history_grip",
 
     fn curveIn(self: Corner) f32 {
         return self.radii[2] * (std.math.sqrt2 - 1);
@@ -436,7 +442,7 @@ pub fn cornerIcon(c: Corner, t: f32, look: Look, bounds: dvui.Rect.Physical) voi
     const full = c.iconCenter(s);
     const ic: [2]f32 = .{ std.math.lerp(p[0], full[0], k), std.math.lerp(p[1], full[1], k) };
     const d = corner_icon * k * s;
-    core.icon.icon(@src(), "history_grip", icons.tvg.lucide.history, .{
+    core.icon.icon(@src(), c.icon_name, c.icon, .{
         .stroke_color = .white,
         .fill_color = .white,
     }, .{
@@ -570,6 +576,49 @@ fn pourStream(lip: [2]f32, end: [2]f32, tail: f32, head: f32, th: f32, color: dv
     r.fill(.all(hw), .{ .color = .{ .color = color }, .fade = 1 });
 }
 
+// ── Bars out this frame ──────────────────────────────────────────────────────────────────────
+//
+// Each transport's bar that is out, and each corner vial at rest, says where it is (`publishBar`),
+// so a bar that would cover it can stand clear (`barsOut`): the tape's bar, out along the bottom
+// of the window, stacks above a pane's history vial or history bar under it. Per frame, kept in
+// dvui's data, and only while something reads them (a tape is loaded): with no reader the last
+// frame, publishing does nothing, so an app with no tape playing does no work for it.
+
+const max_bars = 32;
+const Bars = struct {
+    /// The frame they were published in (`dvui.frameTimeNS`): an earlier frame's are gone.
+    frame_ns: i128 = 0,
+    n: usize = 0,
+    rects: [max_bars]dvui.Rect.Physical = undefined,
+    /// Something read them this frame (`barsOut`), and the last frame: only then are they kept.
+    read: bool = false,
+    wanted: bool = false,
+};
+
+fn bars() *Bars {
+    const b = dvui.dataGetPtrDefault(null, dvui.Id.update(.zero, "app.dome.bars"), "_bars", Bars, .{});
+    const now = dvui.frameTimeNS();
+    if (b.frame_ns != now) b.* = .{ .frame_ns = now, .wanted = b.read };
+    return b;
+}
+
+/// A bar, or a vial at rest, is at `r` (physical, a bar with its tab) this frame. Nothing is kept
+/// unless something read the last frame's (`barsOut`).
+pub fn publishBar(r: dvui.Rect.Physical) void {
+    const b = bars();
+    if (!b.wanted or b.n == max_bars) return;
+    b.rects[b.n] = r;
+    b.n += 1;
+}
+
+/// The bars out this frame so far: those drawn before the caller, as the panes' are before the
+/// demo's overlay.
+pub fn barsOut() []const dvui.Rect.Physical {
+    const b = bars();
+    b.read = true;
+    return b.rects[0..b.n];
+}
+
 test "a bar going back into its corner vial ends as the vial, with no glass between" {
     const c: Corner = .{ .card = .{ .x = 10, .y = 20, .w = 800, .h = 600 }, .radii = .{ 12, 12, 12, 12 } };
     const s: f32 = 2;
@@ -580,6 +629,6 @@ test "a bar going back into its corner vial ends as the vial, with no glass betw
     // Its home is the vial whole: the bubbles arriving are the vial's own outline.
     try std.testing.expectEqual(home, core.widgets.orb.rectOf(c.shape(s, 1)));
     // And no glass runs between them and the vial at the end, which would bulge it.
-    try std.testing.expectEqual(@as(f32, 0), cornerMerge(0, 14));
-    try std.testing.expectApproxEqAbs(@as(f32, 14), cornerMerge(1, 14), 0.001);
+    try std.testing.expectEqual(@as(f32, 0), homeMerge(0, 14));
+    try std.testing.expectApproxEqAbs(@as(f32, 14), homeMerge(1, 14), 0.001);
 }

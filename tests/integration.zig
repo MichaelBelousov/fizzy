@@ -5461,6 +5461,9 @@ var demo_player: automation.Player = undefined;
 /// its own, and its next frame's time comes from the last one's (`dvui.testing.step`) anyway.
 var demo_clock: i128 = 0;
 var demo_clock_on: bool = true;
+/// A bar out under the demo's (a document's history bar, as `HistoryTransport` publishes it), for
+/// the demo's to stack above; physical. Null: none.
+var demo_other_bar: ?dvui.Rect.Physical = null;
 
 /// The app's frame function, as an app runs it: through the player, which repeats it unseen
 /// while a seek catches up.
@@ -5484,6 +5487,7 @@ fn demoRun() !dvui.App.Result {
         te.draw();
         te.deinit();
     }
+    if (demo_other_bar) |b| @import("app").dome.publishBar(b);
     automation.overlay.draw(&demo_player);
     return .ok;
 }
@@ -5771,7 +5775,7 @@ test "demo: closed from its bar, the bar runs back together before the demo goes
     try std.testing.expect(frames > 1);
 }
 
-test "demo: the bar goes into its dome and grows back out of it" {
+test "demo: the bar goes into its corner and grows back out of it" {
     var t = try demoCtx();
     defer deinitDemo(&t);
 
@@ -5781,7 +5785,7 @@ test "demo: the bar goes into its dome and grows back out of it" {
     const tr = &demo_player.transport;
     try std.testing.expect(tr.openness > 0.99);
 
-    // Its tab sends it into the dome, ended as it is, and the dome full: the tape has played out.
+    // Its tab sends it into the corner, ended as it is, and the corner full: the tape has played out.
     try std.testing.expect(tr.tab.w > 0);
     _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = tr.tab.center() });
     _ = try dvui.currentWindow().addEventMouseButton(.left, .press);
@@ -5791,11 +5795,11 @@ test "demo: the bar goes into its dome and grows back out of it" {
     var frames: usize = 0;
     while (tr.openness > 0 and frames < 60) : (frames += 1) _ = try dvui.testing.step(demoFrame);
     try std.testing.expectEqual(@as(f32, 0), tr.openness);
-    const dome = tr.dome orelse return error.TestUnexpectedResult;
-    try std.testing.expect(dvui.tagGet("demo.dome") != null);
+    const corner = tr.rest orelse return error.TestUnexpectedResult;
+    try std.testing.expect(dvui.tagGet("demo.corner") != null);
 
-    // Passing over the dome brings nothing; held on it, the bar grows back out.
-    _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = dome.center() });
+    // Passing over the corner brings nothing; held on it, the bar grows back out.
+    _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = corner.center() });
     for (0..3) |_| _ = try dvui.testing.step(demoFrame);
     try std.testing.expectEqual(@as(f32, 0), tr.openness);
     frames = 0;
@@ -5803,20 +5807,45 @@ test "demo: the bar goes into its dome and grows back out of it" {
     try std.testing.expect(tr.openness > 0.99);
     try std.testing.expect(!tr.tucked);
 
-    // In again, and a press on the dome brings it at once.
+    // In again, and a press on the corner brings it at once.
     _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = tr.tab.center() });
     _ = try dvui.currentWindow().addEventMouseButton(.left, .press);
     _ = try dvui.testing.step(demoFrame);
     _ = try dvui.currentWindow().addEventMouseButton(.left, .release);
     frames = 0;
     while (tr.openness > 0 and frames < 60) : (frames += 1) _ = try dvui.testing.step(demoFrame);
-    _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = tr.dome.?.center() });
+    _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = tr.rest.?.center() });
     _ = try dvui.currentWindow().addEventMouseButton(.left, .press);
     _ = try dvui.testing.step(demoFrame);
     _ = try dvui.currentWindow().addEventMouseButton(.left, .release);
     try std.testing.expect(!tr.tucked);
     // Not the app's: the demo was not diverged by it.
     try std.testing.expect(!demo_player.diverged);
+}
+
+test "demo: the bar stacks above a history bar out under it, and comes back down" {
+    var t = try demoCtx();
+    defer deinitDemo(&t);
+    defer demo_other_bar = null;
+
+    demo_player.load(try demoTape(), .{});
+    try stepDemoUntil(.ended, 400);
+    for (0..20) |_| _ = try dvui.testing.step(demoFrame);
+    const tr = &demo_player.transport;
+    const rest = tr.bar orelse return error.TestUnexpectedResult;
+
+    // A bar comes out where the tape's is: the tape's eases up until it is clear above it.
+    demo_other_bar = .{ .x = rest.x + 40, .y = rest.y - 4, .w = 300, .h = rest.h + 8 };
+    for (0..60) |_| _ = try dvui.testing.step(demoFrame);
+    const up = tr.bar orelse return error.TestUnexpectedResult;
+    try std.testing.expect(up.y + up.h <= demo_other_bar.?.y);
+    try std.testing.expectEqual(rest.x, up.x);
+
+    // It goes: the tape's comes back down to its place.
+    demo_other_bar = null;
+    for (0..60) |_| _ = try dvui.testing.step(demoFrame);
+    const down = tr.bar orelse return error.TestUnexpectedResult;
+    try std.testing.expectApproxEqAbs(rest.y, down.y, 0.5);
 }
 
 test "demo: a replay that does not reach what playing did is caught" {
