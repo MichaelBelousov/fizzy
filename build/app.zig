@@ -841,7 +841,7 @@ pub fn construct(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
         // A document state as the bytes that differ from another: how a track's checkpoints
         // stay small. std-only (see state_delta.zig); `Tracks` keeps its checkpoints with it.
         .{ "fizzy-state-delta-tests", "app/state_delta.zig" },
-        // Image diff: RGBA8 rows and tiles to the rects that differ. std-only (see
+        // Image diff (RGBA8 to rects) and text diff (histogram lines, unified output). std-only (see
         // core/diff.zig); `bench-diff` measures it.
         .{ "fizzy-diff-tests", "core/diff.zig" },
         // When a document's transport shows and for how long, how far a held undo goes, which
@@ -1507,7 +1507,7 @@ pub fn construct(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
         bench_step.dependOn(&run_bench.step);
     }
 
-    // `zig build bench-diff` — core.diff on a 4K image and a 2048x2048 sprite of 50 layers (prints
+    // `zig build bench-diff` — core.diff on a 4K image, a 2048x2048 sprite of 50 layers and 1 MB of text (prints
     // timings). Same rules as `bench-tape`; std-only, so it needs no window.
     {
         const bench_module = b.createModule(.{
@@ -1522,7 +1522,7 @@ pub fn construct(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
         }));
         const bench_diff = b.addTest(.{ .name = "fizzy-bench-diff", .root_module = bench_module });
 
-        const bench_step = b.step("bench-diff", "Benchmark core.diff: a 4K image, a 50-layer sprite (prints timings)");
+        const bench_step = b.step("bench-diff", "Benchmark core.diff: a 4K image, a 50-layer sprite, 1 MB of text (prints timings)");
         const run_bench = b.addRunArtifact(bench_diff);
         run_bench.has_side_effects = true;
         bench_step.dependOn(&run_bench.step);

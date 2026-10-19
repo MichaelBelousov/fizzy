@@ -6,8 +6,15 @@
 pub const Image = @import("diff/Image.zig");
 /// A keepable per-tile hash of an image, 8 bytes per tile, to diff a past state against.
 pub const TileGrid = @import("diff/TileGrid.zig");
+/// A line diff of two texts: histogram with a Myers fallback, over a reusable scratch.
+pub const Text = @import("diff/Text.zig");
+/// A text diff's hunks as a standard unified diff, with a size cap.
+pub const unified = @import("diff/unified.zig");
 
 test {
     _ = Image;
     _ = TileGrid;
+    _ = Text;
+    _ = unified;
+    _ = @import("diff/tests.zig");
 }

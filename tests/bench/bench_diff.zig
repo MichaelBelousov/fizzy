@@ -128,3 +128,91 @@ test "bench: 50-layer 2048x2048 sprite, one layer touched" {
     std.debug.print("\n== core.diff, {d} layers of {d}x{d} ==\none layer touched         {d:8.3} ms  (target < 10)\n", .{ layers, n, n, ms(shared_ns) });
     std.debug.print("  one layer, distinct copy {d:8.3} ms\n", .{ms(try bestOf(5, p, runDiff))});
 }
+
+// ---- text (step 1) ----
+
+const tgpa = std.heap.page_allocator;
+const text_lines = 25_000;
+
+/// Source-shaped lines: indentation, short common ones (braces, blanks) and unique ones.
+fn source(out: *std.ArrayList(u8), r: std.Random) !void {
+    for (0..text_lines) |i| {
+        switch (r.uintLessThan(u8, 8)) {
+            0 => try out.appendSlice(tgpa, "}\n"),
+            1 => try out.appendSlice(tgpa, "\n"),
+            else => try out.print(tgpa, "{s}const value_{d} = compute(arg_{d}, {d}); // line {d}\n", .{ "        "[0 .. 4 * r.uintLessThan(usize, 3)], i, i % 97, r.int(u16), i }),
+        }
+    }
+}
+
+/// `a` with every `every`-th line replaced (0: none).
+fn edited(out: *std.ArrayList(u8), a: []const u8, every: usize, tag: []const u8) !void {
+    var it = std.mem.splitScalar(u8, a, '\n');
+    var n: usize = 0;
+    while (it.next()) |l| : (n += 1) {
+        if (it.peek() == null and l.len == 0) break;
+        if (every != 0 and n % every == 0) try out.print(tgpa, "    {s} {d}\n", .{ tag, n }) else try out.print(tgpa, "{s}\n", .{l});
+    }
+}
+
+fn check(a: []const u8, b: []const u8, hunks: []const diff.Text.Hunk) !void {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(tgpa);
+    var at: usize = 0;
+    for (hunks) |h| {
+        const e = diff.Text.edit(h, b);
+        try out.appendSlice(tgpa, a[at..e.start]);
+        try out.appendSlice(tgpa, e.replacement);
+        at = e.end;
+    }
+    try out.appendSlice(tgpa, a[at..]);
+    try std.testing.expectEqualStrings(b, out.items);
+}
+
+fn run(t: *diff.Text, name: []const u8, budget_ms: f64, a: []const u8, b: []const u8) !void {
+    var hunks: []const diff.Text.Hunk = &.{};
+    _ = try t.diff(tgpa, a, b, .{}); // warm the scratch
+    var best: i96 = std.math.maxInt(i96);
+    for (0..10) |_| {
+        const t0 = nowNs();
+        hunks = try t.diff(tgpa, a, b, .{});
+        best = @min(best, nowNs() - t0);
+    }
+    try check(a, b, hunks);
+    const took = @as(f64, @floatFromInt(best)) / 1e6;
+    std.debug.print("  {s:<34} {d:>9.3} ms  (budget {d:>5.1} ms)  {d} hunks  {s}\n", .{ name, took, budget_ms, hunks.len, if (took <= budget_ms) "ok" else "OVER" });
+}
+
+test "bench: text, 1 MB" {
+    var prng: std.Random.DefaultPrng = .init(0xbe7c);
+    var a: std.ArrayList(u8) = .empty;
+    try source(&a, prng.random());
+    std.debug.print("\nbench-diff: {d} bytes, {d} lines\n", .{ a.items.len, text_lines });
+    var t: diff.Text = .{};
+
+    try run(&t, "identical", 0.2, a.items, a.items);
+
+    var one: std.ArrayList(u8) = .empty;
+    try one.appendSlice(tgpa, a.items);
+    const mid = std.mem.indexOfScalarPos(u8, one.items, a.items.len / 2, '\n').? + 1;
+    try one.insertSlice(tgpa, mid, "    one edited line\n");
+    try run(&t, "one line inserted", 2, a.items, one.items);
+
+    var scattered: std.ArrayList(u8) = .empty;
+    try edited(&scattered, a.items, 100, "edited");
+    try run(&t, "1% of lines edited", 15, a.items, scattered.items);
+
+    var all: std.ArrayList(u8) = .empty;
+    try edited(&all, a.items, 1, "rewritten");
+    try run(&t, "every line changed", 60, a.items, all.items);
+
+    // Lines that repeat past the occurrence cap, so Myers does the work.
+    var rep_a: std.ArrayList(u8) = .empty;
+    var rep_b: std.ArrayList(u8) = .empty;
+    var r = prng.random();
+    for (0..text_lines) |_| {
+        try rep_a.appendSlice(tgpa, if (r.boolean()) "x\n" else "y\n");
+        try rep_b.appendSlice(tgpa, if (r.boolean()) "x\n" else "y\n");
+    }
+    try run(&t, "two-line alphabet (Myers, capped)", 60, rep_a.items, rep_b.items);
+}
