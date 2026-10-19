@@ -170,6 +170,7 @@ user's motion settings, timed in demo time.
 | `fizzy.window:main` | the main window |
 | `fizzy.window:dialog:<title>`, `fizzy.window:float:<title>`, `fizzy.window:menu` | an OS window of the app's own: a dialog's, a popped-out view's, a menu's (a second of the same name gets `:2`) |
 | `region:<name>` | a layout region (`Main`, `Panel`, …) |
+| `region.arrange:<name>` | a region's arrange button, where it grows in the region's corner (move to the corner first to bring it up) |
 | `float-header:<place>`, `float-close:<place>` | a float's header, to carry it by, and its close button: `float-close:Float 1` |
 | `picker:<view id>` | a view's card in a place's picker |
 | `picker.mode:one`, `picker.mode:many` | the picker's Single / Multiple |
