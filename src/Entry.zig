@@ -580,6 +580,8 @@ fn frameOnce() !dvui.App.Result {
         // A snapshot just written answers the `fizzy.screen` waiting on it now, not at the next
         // frame's start: a frame sooner.
         fizzy.editor().answerLaterCommands(true);
+        // And to whoever streams it (`fizzy.screen` on `/events`), the moment it is written.
+        fizzy.editor().streamScreen();
     }
     // Before that replays the subwindows into the frame: a float out of the main window is
     // replayed into its own window instead.

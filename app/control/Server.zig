@@ -73,6 +73,9 @@ pending: std.ArrayListUnmanaged(*Request) = .empty,
 outstanding: std.ArrayListUnmanaged(*Request) = .empty,
 /// Connections streaming events (`publish`), under `lock`.
 streams: std.ArrayListUnmanaged(*Stream) = .empty,
+/// How many: read without the lock, so a frame with no stream takes none (`streamsNaming`'s
+/// callers ask this first).
+stream_count: std.atomic.Value(usize) = .init(0),
 
 /// A connection that asked for events: what it wants, and what is waiting to be written to it.
 pub const Stream = struct {
@@ -87,9 +90,23 @@ pub const Stream = struct {
     overrun: bool = false,
     ready: Io.Event = .unset,
     conn: *Conn,
+    /// Sent an event published to the streams naming it since it joined (`publishNamed`): one
+    /// that has not is sent the next, changed or not.
+    greeted: bool = false,
 
     fn wants(self: *const Stream, name: []const u8) bool {
+        return self.matches(name, true);
+    }
+
+    /// Wants `name` by naming it, or a prefix of it: not by asking for everything (`*`). For an
+    /// event too heavy to send everyone (`publishNamed`).
+    fn names(self: *const Stream, name: []const u8) bool {
+        return self.matches(name, false);
+    }
+
+    fn matches(self: *const Stream, name: []const u8, everything: bool) bool {
         for (self.topics) |t| {
+            if (!everything and std.mem.eql(u8, t, "*")) continue;
             if (t.len > 0 and t[t.len - 1] == '*') {
                 if (std.mem.startsWith(u8, name, t[0 .. t.len - 1])) return true;
             } else if (std.mem.eql(u8, t, name)) return true;
@@ -142,6 +159,7 @@ pub const Request = struct {
             server.lock.lockUncancelable(server.io);
             defer server.lock.unlock(server.io);
             server.streams.append(server.gpa, &self.stream) catch break :added false;
+            server.stream_count.store(server.streams.items.len, .release);
             self.conn.streaming = true;
             break :added true;
         };
@@ -247,12 +265,41 @@ pub fn wants(self: *Server, name: []const u8) bool {
 /// Send the event `name`, its payload already JSON on one line, to every stream that wants it.
 /// The message is built once and copied to each. From any thread.
 pub fn publish(self: *Server, name: []const u8, json: []const u8) void {
+    self.send(name, json, true, false);
+}
+
+/// `publish`, to the streams that name the event (or a prefix of it) only, not those asking for
+/// everything: for an event too heavy for those (`fizzy.screen`, the whole screen each frame it
+/// changes). `changed`: to every such stream; otherwise only to those not yet sent it since
+/// joining, which want the state as it is.
+pub fn publishNamed(self: *Server, name: []const u8, json: []const u8, changed: bool) void {
+    self.send(name, json, false, !changed);
+}
+
+/// The streams naming the event `name` (`publishNamed`), and how many of them have not been sent
+/// it since joining.
+pub fn streamsNaming(self: *Server, name: []const u8) struct { naming: usize, new: usize } {
+    self.lock.lockUncancelable(self.io);
+    defer self.lock.unlock(self.io);
+    var naming: usize = 0;
+    var new: usize = 0;
+    for (self.streams.items) |st| {
+        if (st.overrun or !st.names(name)) continue;
+        naming += 1;
+        if (!st.greeted) new += 1;
+    }
+    return .{ .naming = naming, .new = new };
+}
+
+fn send(self: *Server, name: []const u8, json: []const u8, everything: bool, only_new: bool) void {
     // A line break would end the `event:` line early, and let a name forge messages of its own.
     if (std.mem.indexOfAny(u8, name, "\r\n") != null) return;
     self.lock.lockUncancelable(self.io);
     defer self.lock.unlock(self.io);
     for (self.streams.items) |st| {
-        if (st.overrun or !st.wants(name)) continue;
+        if (st.overrun or !st.matches(name, everything)) continue;
+        if (only_new and st.greeted) continue;
+        if (!everything) st.greeted = true;
         const fits = st.backlog.items.len + name.len + json.len + 16 <= max_backlog;
         if (fits) {
             if (st.backlog.print(self.gpa, "event: {s}\ndata: {s}\n\n", .{ name, json })) |_| {
@@ -457,6 +504,7 @@ fn serveStream(self: *Server, head: *std.http.Server.Request, stream: *Stream) v
         defer self.lock.unlock(self.io);
         for (self.streams.items, 0..) |st, i| if (st == stream) {
             _ = self.streams.swapRemove(i);
+            self.stream_count.store(self.streams.items.len, .release);
             break;
         };
         stream.backlog.deinit(self.gpa);
@@ -791,6 +839,13 @@ test "topics come from the query, and none means everything" {
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "fizzy.document.*", "x.y" }), try topicsOf(a, "/events?a=1&topics=fizzy.document.%2A,%20x.y"));
     const st: Stream = .{ .topics = &.{ "fizzy.document.*", "x.y" }, .conn = undefined };
     try std.testing.expect(st.wants("fizzy.document.saved"));
+    // Named, or by a prefix: what `publishNamed` sends to. Everything (`*`) is not naming it.
+    try std.testing.expect(st.names("fizzy.document.saved"));
+    const all: Stream = .{ .topics = &.{"*"}, .conn = undefined };
+    try std.testing.expect(all.wants("fizzy.screen"));
+    try std.testing.expect(!all.names("fizzy.screen"));
+    const fizzy_all: Stream = .{ .topics = &.{ "*", "fizzy.*" }, .conn = undefined };
+    try std.testing.expect(fizzy_all.names("fizzy.screen"));
     try std.testing.expect(st.wants("x.y"));
     try std.testing.expect(!st.wants("x.yz"));
     try std.testing.expect(!st.wants("fizzy.folder.opened"));
