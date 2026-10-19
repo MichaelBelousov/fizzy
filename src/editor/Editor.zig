@@ -4595,6 +4595,8 @@ pub fn tick(editor: *Editor) !dvui.App.Result {
         // app's), the base is its colour over that material at this opacity (`materialBase`): clear
         // on Liquid Glass, whose colour is the glass's. Elsewhere fizzy's own (`windowBase`).
         const window_color = fizzy.backend.windowMaterialBase(dvui.currentWindow(), dvui.themeGet().color(.content, .fill), editor.window_opacity_anim.value, windowGlassLook(editor.window_opacity_anim.value, dvui.windowRect().size())) orelse windowBase(editor.window_opacity_anim.value);
+        // For glass that is the window's own material (`core.dialogs.windowBase`).
+        fizzy.core.dialogs.publishWindowBase(window_color);
 
         // Linux: the window is transparent and undecorated (`linux_titlebar`), so its shape is
         // this fill's — rounded while windowed, as the desktop rounds its own, with a hairline
