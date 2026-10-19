@@ -136,6 +136,9 @@ pub fn attach(self: *Demo, editor: *Editor) void {
     };
     self.service.bind();
     self.snapshot.windows = .{ .ctx = self, .list = listWindows };
+    // Numbered from somewhere of this run's own, not 1: a screen's number (`fizzy.screen`'s `seq`)
+    // kept from an earlier run is then not some other screen of this one (`since`).
+    self.snapshot.taken = @as(u32, @truncate(@as(u96, @bitCast(std.Io.Clock.real.now(dvui.io).nanoseconds)))) & 0x3fff_ffff;
     // A seek's catch-up frames draw nothing where the backend can drop them (the web's).
     self.player.set_unseen = core.FrameTarget.setUnseen;
 }
@@ -346,7 +349,9 @@ pub fn frameEnd(self: *Demo, main: ?Picture) void {
     const taken = self.snapshot.taken;
     self.snapshot.endFrame();
     // What the snapshot just written shows: every command run up to now (`fizzy.screen`).
-    if (self.snapshot.taken != taken) self.editor.command_runs_at_snapshot = self.editor.app.host.command_runs;
+    if (self.snapshot.taken != taken) {
+        self.editor.command_runs_at_snapshot = self.editor.app.host.command_runs;
+    }
     if (main != null) self.picture.endFrame(sources);
 }
 
