@@ -74,6 +74,9 @@ quitting: bool = false,
 arrange: ?automation.Tape.Keyframe.Layout = null,
 /// Every plugin's settings as the demo found them, as ZON, to give back at the end.
 settings_saved: std.ArrayListUnmanaged(SavedSettings) = .empty,
+/// The app's own settings a tape can change, as the demo found them: only the window's material
+/// (`fizzy.windowMaterial`) so far. A copy of the whole would not do: some hold strings it owns.
+material_saved: ?core.material.Kind = null,
 /// Who a live tape plays for (`automation.Api.playAs`): an agent's pointer tape is the agent's.
 /// Strings owned here. Null: the live tape is its own author.
 live_author: ?sdk.Author = null,
@@ -587,6 +590,9 @@ fn keyframe(ctx: *anyopaque, kf: *const automation.Tape.Keyframe) void {
     // One pane: a split a later moment made is gone at a cut, as on the first pass.
     editor.workbench.onePane();
     self.applySettings(kf.settings);
+    // The app's settings a tape changes are the person's again at a cut: a keyframe declares its
+    // state outright, and declares none of them.
+    if (self.material_saved) |m| editor.app.settings.window_material = m;
 
     // Fresh bytes every time: a replay must not see what the last pass typed or saved.
     self.unmountFiles();
@@ -633,9 +639,16 @@ fn settingsBlob(gpa: std.mem.Allocator, arena: std.mem.Allocator, schema: *const
     return out.toOwnedSlice();
 }
 
+/// `s` with the person's own values where the demo has set them aside: what the settings file is
+/// written with while a demo plays (`Editor.composeSettingsText`).
+pub fn personsSettings(self: *const Demo, s: *Editor.Settings) void {
+    if (self.material_saved) |m| s.window_material = m;
+}
+
 fn saveSettings(self: *Demo) void {
     const editor = self.editor;
     const gpa = editor.app.gpa;
+    self.material_saved = editor.app.settings.window_material;
     for (editor.app.host.settings_schemas.items) |*schema| {
         const blob = settingsBlob(gpa, editor.app.arena.allocator(), schema) catch continue;
         const owner = gpa.dupe(u8, schema.owner.id) catch {
@@ -677,6 +690,8 @@ fn applySettings(self: *Demo, overrides: []const automation.Tape.Setting) void {
 fn restoreSettings(self: *Demo) void {
     const editor = self.editor;
     const gpa = editor.app.gpa;
+    if (self.material_saved) |m| editor.app.settings.window_material = m;
+    self.material_saved = null;
     for (self.settings_saved.items) |saved| {
         const schema = schemaFor(&editor.app.host, saved.owner) orelse continue;
         const now = settingsBlob(gpa, editor.app.arena.allocator(), schema) catch continue;
@@ -826,6 +841,7 @@ const Snapshot = struct {
     /// shut, the tree believing it had already opened it.
     root_opened: ?usize,
     settings: []const SavedSettings,
+    material: core.material.Kind,
     focus: dvui.Id,
     focus_subwindow: dvui.Id,
 
@@ -852,6 +868,7 @@ fn capture(ctx: *anyopaque) ?*anyopaque {
         .branches = &.{},
         .root_opened = editor.workbench.file_tree_root_opened,
         .settings = &.{},
+        .material = editor.app.settings.window_material,
         .focus = dvui.focusedWidgetId() orelse .zero,
         .focus_subwindow = dvui.focusedSubwindowId(),
     };
@@ -951,6 +968,7 @@ fn restore(ctx: *anyopaque, raw: *anyopaque) bool {
     editor.workbench.open_branches.clearRetainingCapacity();
     for (snap.branches) |id| editor.workbench.setBranchOpen(id, true);
     editor.workbench.file_tree_root_opened = snap.root_opened;
+    editor.app.settings.window_material = snap.material;
 
     for (snap.settings) |saved| {
         const schema = schemaFor(&editor.app.host, saved.owner) orelse continue;
@@ -985,6 +1003,7 @@ fn fingerprint(ctx: *anyopaque) u64 {
     }
     if (editor.activeDoc()) |d| h.update(d.owner.documentPath(d));
     h.update(std.mem.asBytes(&editor.explorer.closed));
+    h.update(std.mem.asBytes(&editor.app.settings.window_material));
     if (self.mem) |mem| {
         for (mem.nodes.keys(), mem.nodes.values()) |path, node| {
             h.update(path);
