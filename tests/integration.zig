@@ -5600,8 +5600,12 @@ fn demoRun() !dvui.App.Result {
     }
     if (demo_other_bar) |b| @import("app").dome.publishBar(b);
     automation.overlay.draw(&demo_player);
+    demo_callout_main = if (dvui.tagGet(automation.overlay.callout_anchor)) |td| fizzy.core.screens.isMain(td.id) else null;
     return .ok;
 }
+
+/// Whether the callout was the main window's in the frame just run (`core.screens.markMain`).
+var demo_callout_main: ?bool = null;
 
 /// Seed, count once, click into the field, type two words with a chapter between, ping.
 fn demoTape() !automation.Tape.Owned {
@@ -6047,6 +6051,142 @@ test "demo: a callout never covers a history bar out beside its subject, nor the
         const over_target = r.intersect(target);
         if (over_bar.w > 0 and over_bar.h > 0 or over_target.w > 0 and over_target.h > 0) {
             std.debug.print("callout {any} covers the bar {any} or the target {any}\n", .{ r, bar, target });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expect(seen > 0);
+}
+
+test "demo: a callout keeps clear of an OS window shown over the main one" {
+    var t = try demoCtx();
+    defer deinitDemo(&t);
+
+    const count = (dvui.tagGet("demo.count") orelse return error.TestUnexpectedResult).rect;
+    // A window lying over the main window's frame along the button, where the callout would go.
+    const window: dvui.Rect.Physical = .{ .x = count.x + count.w + 4, .y = count.y - 6, .w = 360, .h = count.h + 12 };
+    var covered_main: [8]dvui.Rect.Physical = undefined;
+    covered_main[0] = window;
+    // Its part of the frame is elsewhere (past the main window's edge), holding nothing here.
+    var covered: [8]dvui.Rect.Physical = undefined;
+    covered[0] = .{ .x = 1e6, .y = 1e6, .w = 400, .h = 300 };
+    const over = dvui.windowRectScale().rectFromPhysical(window);
+
+    demo_player.load(try calloutTape(), .{});
+    // After the load, which starts the transport afresh.
+    demo_player.transport.covered = covered;
+    demo_player.transport.covered_main = covered_main;
+    demo_player.transport.covered_n = 1;
+    defer demo_player.transport.covered_n = 0;
+    var seen: usize = 0;
+    for (0..400) |_| {
+        if (demo_player.state == .ended or demo_player.now() > 3000) break;
+        _ = try dvui.testing.step(demoFrame);
+        const r = calloutRect() orelse continue;
+        seen += 1;
+        const hit = r.intersect(over);
+        if (hit.w > 0 and hit.h > 0) {
+            std.debug.print("callout {any} covers the window {any}\n", .{ r, over });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expect(seen > 0);
+}
+
+test "demo: a callout about what an OS window shows is drawn within that window" {
+    var t = try demoCtx();
+    defer deinitDemo(&t);
+
+    // A window whose part of the frame holds the button and most of the main one, short of its
+    // edge on the right, where the callout would otherwise be kept to the main window's.
+    const main = dvui.windowRectPixels();
+    const part: dvui.Rect.Physical = .{ .x = main.x, .y = main.y, .w = main.w - 120, .h = main.h };
+    var covered: [8]dvui.Rect.Physical = undefined;
+    covered[0] = part;
+    var covered_main: [8]dvui.Rect.Physical = undefined;
+    covered_main[0] = .{ .x = 1e6, .y = 1e6, .w = part.w, .h = part.h };
+    const own = dvui.windowRectScale().rectFromPhysical(part);
+
+    demo_player.load(try calloutTape(), .{});
+    // After the load, which starts the transport afresh.
+    demo_player.transport.covered = covered;
+    demo_player.transport.covered_main = covered_main;
+    demo_player.transport.covered_n = 1;
+    defer demo_player.transport.covered_n = 0;
+    var seen: usize = 0;
+    for (0..400) |_| {
+        if (demo_player.state == .ended or demo_player.now() > 3000) break;
+        _ = try dvui.testing.step(demoFrame);
+        const r = calloutRect() orelse continue;
+        seen += 1;
+        if (r.x < own.x - 0.5 or r.y < own.y - 0.5 or r.x + r.w > own.x + own.w + 0.5 or r.y + r.h > own.y + own.h + 0.5) {
+            std.debug.print("callout {any} is not within its window {any}\n", .{ r, own });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expect(seen > 0);
+}
+
+test "demo: a callout is the main window's unless its subject's window can hold it" {
+    var t = try demoCtx();
+    defer deinitDemo(&t);
+
+    const count = (dvui.tagGet("demo.count") orelse return error.TestUnexpectedResult).rect;
+    const main = dvui.windowRectPixels();
+    const cases = [_]struct { part: dvui.Rect.Physical, main: bool }{
+        // A window around the button, big enough: the callout goes into it.
+        .{ .part = .{ .x = main.x, .y = main.y, .w = main.w - 120, .h = main.h }, .main = false },
+        // A menu's: around the button, too small to hold a callout, so it stays on the main window.
+        .{ .part = .{ .x = count.x - 4, .y = count.y - 4, .w = count.w + 8, .h = count.h + 8 }, .main = true },
+    };
+    for (cases) |case| {
+        demo_player.load(try calloutTape(), .{});
+        demo_player.transport.covered[0] = case.part;
+        demo_player.transport.covered_main[0] = .{ .x = 1e6, .y = 1e6, .w = case.part.w, .h = case.part.h };
+        demo_player.transport.covered_n = 1;
+        defer demo_player.transport.covered_n = 0;
+        var seen: usize = 0;
+        for (0..400) |_| {
+            if (demo_player.state == .ended or demo_player.now() > 3000) break;
+            _ = try dvui.testing.step(demoFrame);
+            if (calloutRect() == null) continue;
+            seen += 1;
+            try std.testing.expectEqual(@as(?bool, case.main), demo_callout_main);
+        }
+        try std.testing.expect(seen > 0);
+    }
+}
+
+test "demo: a callout with no subject stays on the main window, clear of an OS window over it" {
+    var t = try demoCtx();
+    defer deinitDemo(&t);
+
+    var s: automation.Script = .init(std.testing.allocator, "no-subject", "No subject");
+    errdefer s.deinit();
+    try s.keyframe(.{ .root = "demo://callout", .files = &.{.{ .path = "field", .text = "" }} });
+    // Beside something that is not drawn, with no pointer to aim at: nothing to sit beside.
+    try s.caption("Nothing here to point at.", .{ .ms = 6000, .near = "demo.nowhere" });
+    s.pause(6000);
+    demo_player.load(try s.finish(), .{});
+
+    // A window over the main one, across the foot of it where such a callout goes at home, with
+    // a part of the frame elsewhere that holds nothing here.
+    const window: dvui.Rect.Physical = .{ .x = 150, .y = 380, .w = 500, .h = 100 };
+    demo_player.transport.covered[0] = .{ .x = 1e6, .y = 1e6, .w = 400, .h = 300 };
+    demo_player.transport.covered_main[0] = window;
+    demo_player.transport.covered_n = 1;
+    defer demo_player.transport.covered_n = 0;
+    const over = dvui.windowRectScale().rectFromPhysical(window);
+
+    var seen: usize = 0;
+    for (0..400) |_| {
+        if (demo_player.state == .ended or demo_player.now() > 3000) break;
+        _ = try dvui.testing.step(demoFrame);
+        const r = calloutRect() orelse continue;
+        seen += 1;
+        try std.testing.expectEqual(@as(?bool, true), demo_callout_main);
+        const hit = r.intersect(over);
+        if (hit.w > 0 and hit.h > 0) {
+            std.debug.print("callout {any} covers the window {any}\n", .{ r, over });
             return error.TestUnexpectedResult;
         }
     }
