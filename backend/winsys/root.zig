@@ -2,9 +2,9 @@
 //!
 //! Pure data and a vtable: no dvui, no SDL, nothing that allocates on its own, so it compiles for
 //! every target including wasm32 and can be built into a test without a window. Event queueing
-//! and normalisation is `EventQueue`; a Sim platform (4, branch `backend/winsys-sim`),
-//! recording and replay (5), the conformance suite (6) and the SDL3 adapter (7) are built on this
-//! and live beside it later; none is here.
+//! and normalisation is `EventQueue`; `Sim` is a platform in memory, for tests. Recording and
+//! replay (5), the conformance suite (6) and the SDL3 adapter (7) are built on this and live
+//! beside it later; none of those is here.
 //!
 //! The decisions that apply to everything, one line each (the reason is at the type):
 //!
@@ -40,6 +40,7 @@ pub const Event = @import("Event.zig");
 pub const Clipboard = @import("Clipboard.zig");
 pub const Drop = @import("Drop.zig");
 pub const Ime = @import("Ime.zig");
+pub const Sim = @import("Sim.zig");
 pub const EventQueue = @import("EventQueue.zig");
 pub const TouchSlots = @import("TouchSlots.zig");
 pub const geometry = @import("geometry.zig");
