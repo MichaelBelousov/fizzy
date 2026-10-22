@@ -26,6 +26,17 @@ how an app wires it).
 - **std-only tests are listed in `build.zig`'s `unit_tests`,** and fizzy's `zig build test` runs
   them. Window rules that can be stated without a window go in such a file
   (`platform/window_layout.zig`, `viewport_map.zig`).
+- **`winsys/stream.zig` is a file format.** `Recorder` writes it, `Replayer` plays it into a
+  `Sim`, and `winsys/tests/streams/*.hex` are the golden streams. A change to `Event` or any
+  type a record holds moves the bytes: bump `stream.version`, then replace the hex a failing
+  test prints. A stream must carry no platform identity (window, display, touch ids are renamed
+  by `stream.Ids`) so one recorded on a Mac replays on Linux CI.
+- **A stream is a transcript of the session.** Unredacted it holds typed text, key characters,
+  IME input, clipboard contents, window titles and dropped file paths and text. `Recorder.Options.redact` is on by default
+  (those become `*` of the same length, so lengths still leak; key characters dropped; physical keys and
+  timing stay, so it is not anonymous), the clipboard is read only with `read_clipboard`, and the
+  stream stops at `max_bytes` (`Recorder.full`). Never commit or share a `redact = false` stream
+  that was not made from scripted input.
 - **Verify on the platform you changed.** CI's Windows cross-compile proves fizzy links, not that
   it works. `docs/MACOS_LIVE_RESIZE.md` and `docs/WINDOWS_LIVE_RESIZE.md` show how a resize
   was measured.
