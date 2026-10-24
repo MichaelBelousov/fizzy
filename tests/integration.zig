@@ -9743,6 +9743,40 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
     editor.demo.player.unload();
     try dvui.testing.settle(headlessFrame);
 
+    // The tour again, in a phone's shape: its anchors differ (no rail, no Sidebar place), and the
+    // tape still has to reach its last chapter rather than wait on one that is not there.
+    {
+        const desktop_api = editor.demos.api;
+        const desktop_generation = desktop_api.generation();
+        const desktop_size = t.backend.size;
+        const desktop_pixels = t.backend.size_pixels;
+        // The testing backend reports its size from these fields, so writing them *is* a resize.
+        t.backend.size = .{ .w = 390, .h = 844 };
+        t.backend.size_pixels = .{ .w = 390, .h = 844 };
+        fizzy.core.platform.cached_form_factor = .mobile;
+        defer {
+            fizzy.core.platform.cached_form_factor = .desktop;
+            t.backend.size = desktop_size;
+            t.backend.size_pixels = desktop_pixels;
+        }
+        // `step` re-reads the size at its end, so the first frame still runs at the old one.
+        _ = try dvui.testing.step(headlessFrame);
+        try dvui.testing.settle(headlessFrame);
+        // The list differs by form factor, so its generation moves and a retained one is stale.
+        try std.testing.expect(desktop_api.generation() != desktop_generation);
+        try editor.demo.play("tour");
+        const player = &editor.demo.player;
+        var phone_frames: usize = 0;
+        while (player.state != .ended and phone_frames < 5000) : (phone_frames += 1) {
+            _ = try dvui.testing.step(headlessFrame);
+        }
+        try std.testing.expectEqual(app.automation.Player.State.ended, player.state);
+        // No wait gave up: every anchor the phone's tour aims at is drawn in the phone's shape.
+        try std.testing.expectEqual(@as(u32, 0), player.timeouts);
+        player.unload();
+        try dvui.testing.settle(headlessFrame);
+    }
+
     // The text commands, as a snippet keybind, a tape or an agent calls them: each one
     // undoable edit to the active document.
     {
