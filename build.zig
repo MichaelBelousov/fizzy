@@ -23,23 +23,55 @@ pub fn build(b: *std.Build) !void {
     run_lint.has_side_effects = true;
     b.step("lint", "Check Zig source against lint budgets").dependOn(&run_lint.step);
 
-    const windows_msvc_libc_opt = b.option([]const u8, "windows-msvc-libc", "zig libc manifest for *-windows-msvc when cross-compiling; forwarded by packageall for Windows children") orelse null;
-    const fetch_msvc_opt = b.option(bool, "fetch-msvc", "If *-windows-msvc libc is missing under .velopack-msvc/, run msvcup-setup first (downloads MSVC+SDK; requires network). Defaults to true on Windows hosts targeting *-windows-msvc.") orelse null;
+    const windows_msvc_libc_opt = b.option(
+        []const u8,
+        "windows-msvc-libc",
+        "zig libc manifest for *-windows-msvc when cross-compiling; forwarded by " ++
+            "packageall for Windows children",
+    ) orelse null;
+    const fetch_msvc_opt = b.option(
+        bool,
+        "fetch-msvc",
+        "If *-windows-msvc libc is missing under .velopack-msvc/, run msvcup-setup " ++
+            "first (downloads MSVC+SDK; requires network). Defaults to true on Windows " ++
+            "hosts targeting *-windows-msvc.",
+    ) orelse null;
 
     // Options only, never the environment: Zig 0.17 caches the build's configuration without
     // regard to it, so a variable read here would be seen once and then ignored.
     // `scripts/release.sh` and `release.yml` turn the FIZZY_MACOS_* variables into these.
-    const macos_sign_app_identity = b.option([]const u8, "macos-sign-app", "macOS codesign identity for the app bundle (e.g. 'Developer ID Application: NAME (TEAMID)')");
-    const macos_sign_install_identity = b.option([]const u8, "macos-sign-installer", "macOS codesign identity for the installer pkg (e.g. 'Developer ID Installer: NAME (TEAMID)')");
-    const macos_notary_profile = b.option([]const u8, "macos-notary-profile", "notarytool keychain profile name (run `xcrun notarytool store-credentials <name>` first)");
-    const macos_sdk = b.option([]const u8, "macos-sdk", "macOS SDK path for an explicit -Dtarget=*-macos (default: `xcrun --sdk macosx --show-sdk-path`)");
+    const macos_sign_app_identity = b.option(
+        []const u8,
+        "macos-sign-app",
+        "macOS codesign identity for the app bundle (e.g. 'Developer ID " ++
+            "Application: NAME (TEAMID)')",
+    );
+    const macos_sign_install_identity = b.option(
+        []const u8,
+        "macos-sign-installer",
+        "macOS codesign identity for the installer pkg (e.g. 'Developer ID " ++
+            "Installer: NAME (TEAMID)')",
+    );
+    const macos_notary_profile = b.option(
+        []const u8,
+        "macos-notary-profile",
+        "notarytool keychain profile name (run `xcrun notarytool store-credentials " ++
+            "<name>` first)",
+    );
+    const macos_sdk = b.option(
+        []const u8,
+        "macos-sdk",
+        "macOS SDK path for an explicit -Dtarget=*-macos (default: `xcrun --sdk " ++
+            "macosx --show-sdk-path`)",
+    );
 
     // Windows 10 1803 at least: AF_UNIX arrived there, and std offers it only to a target whose
     // minimum is that (`std.Io.net.has_unix_sockets`) — the control server's socket
     // (`app/control/Server.zig`). Every Windows still supported by Microsoft is newer.
     const target = target: {
         const asked = b.standardTargetOptions(.{});
-        if (asked.result.os.tag != .windows or asked.result.os.isAtLeast(.windows, .win10_rs4) == true) break :target asked;
+        if (asked.result.os.tag != .windows or
+            asked.result.os.isAtLeast(.windows, .win10_rs4) == true) break :target asked;
         if (asked.result.os.version_range.windows.max.isAtLeast(.win10_rs4) != true)
             std.debug.panic("fizzy needs Windows 10 1803 (win10_rs4) or newer; -Dtarget asks for an older range", .{});
         var query = asked.query;
@@ -84,7 +116,13 @@ pub fn build(b: *std.Build) !void {
     // `defer-app` here and calls `buildApp` below with its plugin modules instead.
     const app = @import("build/app.zig");
     const cfg = try app.readConfig(b, target, base);
-    if (b.option(bool, "defer-app", "Do not build the application here; the consumer calls `buildApp` with its own plugins") orelse false) {
+    const defer_app = b.option(
+        bool,
+        "defer-app",
+        "Do not build the application here; the consumer calls `buildApp` with its " ++
+            "own plugins",
+    ) orelse false;
+    if (defer_app) {
         deferred = .{ .target = target, .optimize = optimize, .base = base, .cfg = cfg };
         return;
     }
@@ -164,7 +202,13 @@ pub fn framework(fizzy_dep: *std.Build.Dependency, platform: Platform) Framework
 /// try fizzy.buildApp(fizzy_dep, &.{
 ///     fizzy.plugins.workbench,
 ///     fizzy.plugins.text,
-///     .{ .name = "pixi", .module = b.dependency("pixi", .{ .target = target, .optimize = optimize }).module("plugin") },
+///     .{
+///         .name = "pixi",
+///         .module = b.dependency("pixi", .{
+///             .target = target,
+///             .optimize = optimize,
+///         }).module("plugin"),
+///     },
 /// });
 /// b.installArtifact(fizzy_dep.artifact("myapp"));
 /// ```
@@ -266,10 +310,17 @@ fn withFizzys(b: *std.Build, linked: []const BundledPlugin) ![]const BundledPlug
 /// Windows MSVC ones reach fizzy only if the app declares `windows-msvc-libc` / `fetch-msvc` and
 /// passes them on in `b.dependency`. Without them, a `*-windows-msvc` run fetches MSVC itself.
 pub fn addPackageSteps(b: *std.Build, fizzy_dep: *std.Build.Dependency) !void {
-    const d = deferred orelse @panic("fizzy.addPackageSteps: pass `.@\"defer-app\" = true` to b.dependency(\"fizzy\", …) and call fizzy.buildApp first");
+    const d = deferred orelse @panic(
+        "fizzy.addPackageSteps: pass `.@\"defer-app\" = true` to " ++
+            "b.dependency(\"fizzy\", …) and call fizzy.buildApp first",
+    );
     const names = [_][]const u8{ "package", "desktop", "packageall" };
     for (names) |name| if (b.top_level_steps.contains(name)) {
-        std.log.err("fizzy.addPackageSteps: this build already has a `{s}` step; `package`, `desktop` and `packageall` are the names it adds", .{name});
+        std.log.err(
+            "fizzy.addPackageSteps: this build already has a `{s}` step; `package`, " ++
+                "`desktop` and `packageall` are the names it adds",
+            .{name},
+        );
         return error.PackageStepTaken;
     };
     if (!d.built) @panic("fizzy.addPackageSteps: call fizzy.buildApp first");
@@ -322,7 +373,10 @@ pub const NativeBackend = @import("build/exe.zig").NativeBackend;
 ///
 /// ```zig
 /// const backend = @import("backend");
-/// const viewports = if (@hasDecl(backend, "viewports")) backend.viewports else @import("viewports_none");
+/// const viewports = if (@hasDecl(backend, "viewports"))
+///     backend.viewports
+/// else
+///     @import("viewports_none");
 /// ```
 ///
 /// On fizzy's backend it also gets `platform` (the window's chrome and state), and on macOS the
@@ -340,6 +394,14 @@ pub fn addDvui(fizzy_dep: *std.Build.Dependency, root_module: *std.Build.Module,
     root_module.addImport("viewports_none", @import("fizzy_backend").viewportsNoneModule(backend_dep, native.dvui));
     if (backend == .fizzy) {
         root_module.addImport("platform", exe.platformModule(b, native, target, optimize, macos_sdl_paths));
-        @import("fizzy_backend").addPlatformObjC(backend_dep, root_module, exe.backendOptions(target, optimize, macos_sdl_paths));
+        @import("fizzy_backend").addPlatformObjC(
+            backend_dep,
+            root_module,
+            exe.backendOptions(
+                target,
+                optimize,
+                macos_sdl_paths,
+            ),
+        );
     }
 }
