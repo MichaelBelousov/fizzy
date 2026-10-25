@@ -3706,6 +3706,73 @@ test "a split of a carded place, and of its new half, opens even halves" {
     try std.testing.expectApproxEqAbs(top.h, bottom.h, 1);
 }
 
+// A split fizzy made turns with its space: stacked when the room is taller than wide, side by
+// side when wider. The turn is how it is drawn, not what is saved: the person's side and extent
+// stay as they left them, nothing is written, and the new half keeps its share of the room.
+test "an adaptive split turns with the window, keeps its share and writes nothing" {
+    var ctx = try shim.init(std.testing.allocator);
+    defer ctx.deinit(std.testing.allocator);
+
+    const editor = ctx.editor;
+    editor.app.gpa = std.testing.allocator;
+    defer editor.app.layout.regions.deinit(editor.app.gpa);
+    defer editor.app.layout.regions_building.deinit(editor.app.gpa);
+    defer editor.app.layout.deinitExtents(editor.app.gpa);
+    defer editor.app.layout.deinitAssignments(editor.app.gpa);
+    defer editor.app.layout.deinitQualified(editor.app.gpa);
+
+    ColumnCardFrame.editor = editor;
+    defer ColumnCardFrame.editor = null;
+
+    // A tablet held across: wider than tall.
+    ctx.t.backend.size = .{ .w = 1180, .h = 820 };
+    ctx.t.backend.size_pixels = .{ .w = 1180, .h = 820 };
+    _ = try dvui.testing.step(ColumnCardFrame.frame);
+    try dvui.testing.settle(ColumnCardFrame.frame);
+    {
+        var layout = fizzy.Editor.Layout.init(&editor.app.host, &editor.app.layout, editor.app.gpa, dvui.currentWindow().arena());
+        try std.testing.expectEqualStrings("Main/r1", layout.splitOn("Main", .right) orelse return error.TestExpectedEqual);
+        layout.markAdaptive("Main/r1");
+    }
+    try dvui.testing.settle(ColumnCardFrame.frame);
+    const old = try ColumnCardFrame.sizeOf(editor, "Main");
+    const new = try ColumnCardFrame.sizeOf(editor, "Main/r1");
+    try std.testing.expect(new.w > 40);
+    try std.testing.expectApproxEqAbs(old.h, new.h, 1);
+    const share = new.w / (old.w + new.w);
+    const saved_extent = editor.app.layout.extent("Main/r1", 0);
+    editor.app.layout.dirty = false;
+
+    // Turned upright: the new half is below, with the share it had beside.
+    ctx.t.backend.size = .{ .w = 820, .h = 1180 };
+    ctx.t.backend.size_pixels = .{ .w = 820, .h = 1180 };
+    // The turn eases (the place slides shut, and open the other way): the frames it takes.
+    for (0..40) |_| _ = try dvui.testing.step(ColumnCardFrame.frame);
+    const top = try ColumnCardFrame.sizeOf(editor, "Main");
+    const bottom = try ColumnCardFrame.sizeOf(editor, "Main/r1");
+    try std.testing.expectApproxEqAbs(top.w, bottom.w, 1);
+    try std.testing.expectApproxEqAbs(share, bottom.h / (top.h + bottom.h), 0.03);
+    try std.testing.expect(!editor.app.layout.dirty);
+    try std.testing.expectEqual(saved_extent, editor.app.layout.extent("Main/r1", 0));
+    {
+        const links = editor.app.layout.splits.collectLinks(std.testing.allocator);
+        defer std.testing.allocator.free(links);
+        try std.testing.expectEqual(@as(usize, 1), links.len);
+        try std.testing.expectEqual(fizzy.Editor.Layout.State.SplitTree.Side.right, links[0].side);
+        try std.testing.expect(links[0].adaptive);
+    }
+
+    // And back across: beside again, the same share.
+    ctx.t.backend.size = .{ .w = 1180, .h = 820 };
+    ctx.t.backend.size_pixels = .{ .w = 1180, .h = 820 };
+    for (0..40) |_| _ = try dvui.testing.step(ColumnCardFrame.frame);
+    const left = try ColumnCardFrame.sizeOf(editor, "Main");
+    const right = try ColumnCardFrame.sizeOf(editor, "Main/r1");
+    try std.testing.expectApproxEqAbs(left.h, right.h, 1);
+    try std.testing.expectApproxEqAbs(share, right.w / (left.w + right.w), 0.03);
+    try std.testing.expect(!editor.app.layout.dirty);
+}
+
 /// Main | (Main/r1 over Main/r1/b1) in fizzy's split forest, each holding one view. Main/r1 is two
 /// things at once: the half Main's split minted, and the half its own split kept.
 const NestedSplitCase = struct {
@@ -9609,6 +9676,28 @@ fn headlessFrame() !dvui.App.Result {
     return fizzy.Entry.AppFrame();
 }
 
+/// What a demo made of the document panes while it played, watched a frame at a time: the most
+/// panes there were at once, and whether two of them ever sat one above the other or side by side.
+const PaneWatch = struct {
+    most: usize = 0,
+    stacked: bool = false,
+    side_by_side: bool = false,
+
+    fn look(self: *PaneWatch, wb: *const workbench.Workbench) void {
+        const panes = wb.workspaces.values();
+        self.most = @max(self.most, panes.len);
+        for (panes, 0..) |a, i| for (panes[i + 1 ..]) |b| {
+            const ra = a.pane_rect_physical orelse continue;
+            const rb = b.pane_rect_physical orelse continue;
+            if (ra.w < 1 or rb.w < 1 or ra.h < 1 or rb.h < 1) continue;
+            const below = ra.y >= rb.y + rb.h - 1 or rb.y >= ra.y + ra.h - 1;
+            const beside = ra.x >= rb.x + rb.w - 1 or rb.x >= ra.x + ra.w - 1;
+            if (below and !beside) self.stacked = true;
+            if (beside and !below) self.side_by_side = true;
+        };
+    }
+};
+
 test "headless: the whole editor comes up, opens a file, plays the tour and goes down" {
     // One test, not several: a second whole editor in the same process cannot load its plugins.
     // Not the testing allocator: this is the app's own lifetime, whose exit leaks by design
@@ -9983,10 +10072,15 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
     const unattributed_before = editor.app.host.unattributed_steps;
     try editor.demo.play("tour");
     var frames: usize = 0;
+    var desktop_panes: PaneWatch = .{};
     while (editor.demo.player.state != .ended and frames < 5000) : (frames += 1) {
         _ = try dvui.testing.step(headlessFrame);
+        desktop_panes.look(&editor.workbench);
     }
     try std.testing.expectEqual(app.automation.Player.State.ended, editor.demo.player.state);
+    // A wide window sets the tour's two documents side by side.
+    try std.testing.expect(desktop_panes.side_by_side);
+    try std.testing.expect(!desktop_panes.stacked);
     // Every step the tour made has an author: its own where it drives the frame, or its commands'
     // (`Host.act` in the demo's stage). A step nobody acted for is a missed site
     // (`plans/SHARED_HISTORY_PLAN.md`). Owners report every step once that plan's step 3 lands;
@@ -10086,12 +10180,44 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
         try editor.demo.play("tour");
         const player = &editor.demo.player;
         var phone_frames: usize = 0;
+        var phone_panes: PaneWatch = .{};
         while (player.state != .ended and phone_frames < 5000) : (phone_frames += 1) {
             _ = try dvui.testing.step(headlessFrame);
+            phone_panes.look(&editor.workbench);
         }
         try std.testing.expectEqual(app.automation.Player.State.ended, player.state);
         // No wait gave up: every anchor the phone's tour aims at is drawn in the phone's shape.
         try std.testing.expectEqual(@as(u32, 0), player.timeouts);
+        // A phone never splits by itself: the second document is a card in the one group.
+        try std.testing.expectEqual(@as(usize, 1), phone_panes.most);
+        player.unload();
+        try dvui.testing.settle(headlessFrame);
+    }
+
+    // A tablet held upright stacks the tour's two documents: the window is taller than wide, with
+    // room for two.
+    {
+        const desktop_size = t.backend.size;
+        const desktop_pixels = t.backend.size_pixels;
+        t.backend.size = .{ .w = 820, .h = 1180 };
+        t.backend.size_pixels = .{ .w = 820, .h = 1180 };
+        defer {
+            t.backend.size = desktop_size;
+            t.backend.size_pixels = desktop_pixels;
+        }
+        _ = try dvui.testing.step(headlessFrame);
+        try dvui.testing.settle(headlessFrame);
+        try editor.demo.play("tour");
+        const player = &editor.demo.player;
+        var tablet_frames: usize = 0;
+        var tablet_panes: PaneWatch = .{};
+        while (player.state != .ended and tablet_frames < 5000) : (tablet_frames += 1) {
+            _ = try dvui.testing.step(headlessFrame);
+            tablet_panes.look(&editor.workbench);
+        }
+        try std.testing.expectEqual(app.automation.Player.State.ended, player.state);
+        try std.testing.expect(tablet_panes.stacked);
+        try std.testing.expect(!tablet_panes.side_by_side);
         player.unload();
         try dvui.testing.settle(headlessFrame);
     }
@@ -10419,6 +10545,14 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
         const holder_vtable: sdk.Plugin.VTable = .{};
         var holder: sdk.Plugin = .{ .state = &holder_state, .vtable = &holder_vtable, .id = "holder", .display_name = "Holder" };
         const here = editor.workbench.open_workspace_grouping;
+        // The claim shows the document beside the person's pane, as a room with space for two
+        // does (`core.placement`); the pane here is narrower than that under a sidebar, so its
+        // room is set to a desktop window's.
+        const here_ws = editor.workbench.workspaces.getPtr(here) orelse return error.TestUnexpectedResult;
+        const drawn_room = here_ws.pane_rect_physical;
+        defer here_ws.pane_rect_physical = drawn_room;
+        const room_scale = dvui.windowNaturalScale();
+        here_ws.pane_rect_physical = .{ .x = 0, .y = 0, .w = 1200 * room_scale, .h = 800 * room_scale };
         const claim = try host.claimDocument(&holder, doc.id, "Holder");
         try std.testing.expectError(error.DocumentClaimed, host.claimDocument(editor.app.host.plugins.items[0], doc.id, "Other"));
         try dvui.testing.settle(headlessFrame);
@@ -10493,6 +10627,31 @@ test "headless: the whole editor comes up, opens a file, plays the tour and goes
             if (ws.grouping != here) if (ws.active) |a| if (a.id == last.id) break true;
         } else false;
         try std.testing.expect(beside);
+    }
+
+    // A document opened beside the person's goes where the shape of its room says
+    // (`core.placement.place`): a new pane in a room with space for two, the person's own pane as
+    // a card in one without, and the pane that is there already, whatever its size. The window
+    // cannot be resized under a whole editor headlessly (the testing backend crashes), so the
+    // room is the pane's own rect, set.
+    {
+        const wb = &editor.workbench;
+        const here = wb.open_workspace_grouping;
+        const ws = wb.workspaces.getPtr(here) orelse return error.TestUnexpectedResult;
+        const drawn = ws.pane_rect_physical orelse return error.TestUnexpectedResult;
+        defer ws.pane_rect_physical = drawn;
+        const s = dvui.windowNaturalScale();
+        const others = wb.workspaces.count() - 1;
+        ws.pane_rect_physical = .{ .x = 0, .y = 0, .w = 1200 * s, .h = 800 * s };
+        try std.testing.expect(wb.besideGrouping() != here);
+        ws.pane_rect_physical = .{ .x = 0, .y = 0, .w = 820 * s, .h = 1180 * s };
+        try std.testing.expect(wb.besideGrouping() != here);
+        ws.pane_rect_physical = .{ .x = 0, .y = 0, .w = 390 * s, .h = 844 * s };
+        // With another pane there, it takes the view; without, the person's own does.
+        const taken = wb.besideGrouping();
+        if (others > 0) try std.testing.expect(taken != here) else try std.testing.expectEqual(here, taken);
+        try std.testing.expectEqual(fizzy.core.widgets.DockLayout.Side.right, workbench.Workbench.sideFor(1200, 800));
+        try std.testing.expectEqual(fizzy.core.widgets.DockLayout.Side.bottom, workbench.Workbench.sideFor(820, 1180));
     }
 
     // A document's history as a line (`Plugin.historyLine`): each step keeps its id through
