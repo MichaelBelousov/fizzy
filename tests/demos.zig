@@ -514,12 +514,77 @@ test "demo: every bundled demo plays to the end through fizzy's stage, a seek la
         try dvui.testing.settle(headlessFrame);
     }
 
+    try revertClosesWhatTheTourOpened(&app);
+    try revertKeepsAMovedFloat(&app);
     try tourOnAPhone(&app);
 
     // Left loaded for `down`, which quits the way `appQuit` does.
     try app.editor.demo.play(fizzy.Editor.Demo.catalog.entries[0].name);
     for (0..5) |_| _ = try dvui.testing.step(headlessFrame);
     try std.testing.expect(app.editor.demo.active());
+}
+
+/// A tour played to its end and reverted closes what it opened, and the window is the person's
+/// again: here with the explorer shut, a window the recording was not made on.
+fn revertClosesWhatTheTourOpened(app: *BundledApp) !void {
+    const editor = app.editor;
+    const p = &editor.demo.player;
+
+    // A window the recording does not match: the explorer shut.
+    editor.explorer.close(editor);
+    try dvui.testing.settle(headlessFrame);
+    const print_before = fizzy.Editor.Demo.layoutPrint(editor);
+    const closed_before = editor.explorer.closed;
+
+    try editor.demo.play(fizzy.Editor.Demo.catalog.entries[0].name);
+    var frames: usize = 0;
+    while (p.state != .ended and frames < 20_000) : (frames += 1) _ = try dvui.testing.step(headlessFrame);
+    try std.testing.expectEqual(automation.Player.State.ended, p.state);
+    try std.testing.expectEqual(@as(u32, 0), p.timeouts);
+    try std.testing.expect(fizzy.Editor.Demo.layoutPrint(editor) != print_before);
+
+    p.revert();
+    // What the tour opened glides shut over a few frames.
+    frames = 0;
+    while (frames < 120) : (frames += 1) _ = try dvui.testing.step(headlessFrame);
+    try std.testing.expectEqual(print_before, fizzy.Editor.Demo.layoutPrint(editor));
+    try std.testing.expectEqual(closed_before, editor.explorer.closed);
+    try std.testing.expectEqual(@as(usize, 0), editor.app.layout.floats.items.items.len);
+}
+
+/// A float the person had, then moved while the tour played, is back where it was after the
+/// revert, not flying shut: only what the snapshot lacks glides away.
+fn revertKeepsAMovedFloat(app: *BundledApp) !void {
+    const editor = app.editor;
+    const p = &editor.demo.player;
+    const gpa = editor.app.gpa;
+    const state = &editor.app.layout;
+
+    const at: dvui.Rect = .{ .x = 120, .y = 90, .w = 220, .h = 160 };
+    try state.assign(gpa, "Float 1", &.{"devtools.dashboard"});
+    _ = try state.floats.add(gpa, .{ .name = state.internName(gpa, "Float 1"), .rect = at, .home = "" });
+    try dvui.testing.settle(headlessFrame);
+
+    try editor.demo.play(fizzy.Editor.Demo.catalog.entries[0].name);
+    var frames: usize = 0;
+    while (frames < 60) : (frames += 1) _ = try dvui.testing.step(headlessFrame);
+    try std.testing.expectEqual(automation.Player.State.playing, p.state);
+
+    const moved = state.floats.find("Float 1") orelse return error.TestExpectedEqual;
+    state.floats.items.items[moved].rect.x += 40;
+
+    p.unload();
+    try std.testing.expect(!editor.demo.active());
+    frames = 0;
+    while (frames < 120) : (frames += 1) _ = try dvui.testing.step(headlessFrame);
+
+    const back = state.floats.items.items[state.floats.find("Float 1") orelse return error.TestExpectedEqual];
+    try std.testing.expect(!back.closing);
+    try std.testing.expectEqual(at.x, back.rect.x);
+    try std.testing.expectEqual(@as(usize, 1), state.floats.items.items.len);
+
+    state.floats.removeAt(0);
+    try state.assign(gpa, "Float 1", &.{});
 }
 
 /// What straight play of a demo must keep steady, watched a frame at a time:
